@@ -4450,10 +4450,31 @@ kbd {
 }
 /* Batting order editor: ▲▼ on each row. */
 .team-lineup.editable li {
-  grid-template-columns: 18px 1fr auto auto;
+  grid-template-columns: 14px 18px 1fr auto auto;
   align-items: center;
   padding: 2px 4px;
   border-radius: 4px;
+  cursor: grab;
+  user-select: none;
+}
+.team-lineup.editable.locked li {
+  cursor: default;
+}
+.team-lineup.editable li.dragging {
+  cursor: grabbing;
+  background: #e8b65a33;
+  box-shadow: 0 0 0 1px #e8b65a inset, 0 4px 12px #0006;
+}
+.lineup-grip {
+  font-style: normal;
+  color: #e0ba7699;
+  font-size: 0.875rem;
+  line-height: 1;
+  /* A finger on the handle drags the row instead of scrolling the page. */
+  touch-action: none;
+}
+.team-lineup.editable.locked .lineup-grip {
+  opacity: 0.25;
 }
 .team-lineup.editable li.me {
   background: #e8b65a1a;

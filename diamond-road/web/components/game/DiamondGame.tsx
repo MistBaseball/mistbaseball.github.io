@@ -786,16 +786,48 @@ function TeamStrength({ engine }: { engine: BaseballEngine }) {
  * player; only who bats where changes. Locked while a match is under way.
  */
 function LineupEditor({ engine, s }: { engine: BaseballEngine; s: GameState }) {
-  const order = engine.battingOrder,
+  // Dragging a hitter: the list shows where he would land while the pointer moves, and the
+  // order is saved when he is let go. (Mouse: anywhere on the row; touch: the ⠿ handle, so
+  // the page still scrolls with a finger elsewhere.)
+  const [drag, setDrag] = useState<{ key: number; order: number[] } | null>(null),
+    rows = useRef<Record<number, HTMLLIElement | null>>({}),
+    order = engine.battingOrder,
+    shown = drag?.order ?? order,
     locked = engine.matchActive,
     custom = order.some((k, i) => k !== i),
     me = order.indexOf(0),
+    save = (next: number[]) => {
+      if (!engine.setBattingOrder(next)) toast.error("경기 중에는 타순을 바꿀 수 없어요");
+    },
     move = (i: number, d: number) => {
       const j = i + d;
       if (j < 0 || j > 8) return;
       const next = [...order];
       [next[i], next[j]] = [next[j], next[i]];
-      if (!engine.setBattingOrder(next)) toast.error("경기 중에는 타순을 바꿀 수 없어요");
+      save(next);
+    },
+    grab = (e: React.PointerEvent<HTMLLIElement>, k: number) => {
+      const t = e.target as HTMLElement;
+      if (locked || e.button !== 0 || t.closest("button")) return;
+      if (e.pointerType !== "mouse" && !t.closest(".lineup-grip")) return;
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setDrag({ key: k, order: [...order] });
+    },
+    slide = (e: React.PointerEvent) => {
+      if (!drag) return;
+      const others = drag.order.filter((k) => k !== drag.key),
+        at = others.filter((k) => {
+          const r = rows.current[k]?.getBoundingClientRect();
+          return r && r.top + r.height / 2 < e.clientY;
+        }).length,
+        next = [...others.slice(0, at), drag.key, ...others.slice(at)];
+      if (next.some((k, i) => k !== drag.order[i])) setDrag({ ...drag, order: next });
+    },
+    drop = () => {
+      if (!drag) return;
+      if (drag.order.some((k, i) => k !== order[i])) save(drag.order);
+      setDrag(null);
     };
   return (
     <>
@@ -803,15 +835,29 @@ function LineupEditor({ engine, s }: { engine: BaseballEngine; s: GameState }) {
         {engine.role === "pitcher"
           ? `투수만 모드라 내 자리에는 지명타자가 ${me + 1}번으로 섭니다.`
           : `나는 ${me + 1}번 타자.`}{" "}
-        ▲▼로 타순을 바꿀 수 있어요(수비 위치는 그대로). 스윙은 모두 내가 조작하고, 내 능력치
+        선수를 위아래로 끌어서(또는 ▲▼로) 타순을 바꿀 수 있어요(수비 위치는 그대로). 스윙은 모두
+        내가 조작하고, 내 능력치
         평균이 오르면 동료 능력치도 그 75%만큼 함께 오릅니다.
         {locked && <b className="lineup-lock"> 경기 중에는 타순을 바꿀 수 없어요.</b>}
       </p>
-      <ol className="team-lineup editable">
-        {order.map((k, i) => {
+      <ol className={`team-lineup editable ${locked ? "locked" : ""}`}>
+        {shown.map((k, i) => {
           const p = engine.member(k);
           return (
-            <li key={k} className={k === 0 ? "me" : ""}>
+            <li
+              key={k}
+              ref={(el) => {
+                rows.current[k] = el;
+              }}
+              className={`${k === 0 ? "me" : ""} ${drag?.key === k ? "dragging" : ""}`}
+              onPointerDown={(e) => grab(e, k)}
+              onPointerMove={slide}
+              onPointerUp={drop}
+              onPointerCancel={drop}
+            >
+              <i className="lineup-grip" aria-hidden>
+                ⠿
+              </i>
               <span>{i + 1}</span>
               <strong>
                 {p.nick ? (

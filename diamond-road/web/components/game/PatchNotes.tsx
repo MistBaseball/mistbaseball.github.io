@@ -17,6 +17,14 @@ type Patch = { version: string; date: string; title: string; items: string[] };
 
 export const PATCHES: Patch[] = [
   {
+    version: "v12.3",
+    date: "10/05",
+    title: "타순 끌어서 바꾸기",
+    items: [
+      "라인업 · 타순에서 선수를 위아래로 끌어 원하는 자리에 놓으면 바로 바뀝니다(마우스는 줄 아무 곳, 휴대폰은 왼쪽 ⠿ 손잡이). ▲▼ 버튼도 그대로 있어요.",
+    ],
+  },
+  {
     version: "v12.2",
     date: "10/04",
     title: "선수 등록 · 자유 능력치",
