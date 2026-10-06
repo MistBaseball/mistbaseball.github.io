@@ -81,6 +81,7 @@ import {
   swingWindow,
   matchTeams,
   STAGES,
+  trainMax,
   statCapOf,
   LEGEND_PITCHES,
   formOf,
@@ -999,7 +1000,7 @@ function CareerView({ engine, s }: { engine: BaseballEngine; s: GameState }) {
                     ? `2군 생활(상대 ${TIER_RATINGS.farm.mean}±${TIER_RATINGS.farm.spread}). 경기를 마칠 때마다 감독의 신뢰가 오르고, 100점이면 1군으로 올라갑니다.`
                     : c.draft
                       ? `진로 확정: ${c.draft}`
-                      : "시즌 경기를 마칠 때마다 탈삼진·안타·승리에 따라 평가가 3~18점 오릅니다. 100점이 되면 입단 제의를 받습니다."}
+                      : "시즌 경기를 마칠 때마다 탈삼진·안타·득점·승리에 따라 평가가 3~30점 오릅니다. 잘할수록 많이 올라요. 100점이 되면 입단 제의를 받습니다."}
             </p>
           </article>
         </div>
@@ -1287,7 +1288,7 @@ function LifeView({
               <span className="mg-tag">미니게임 · {TRAINING_GAMES[t.id].title}</span>
             )}
             <div>
-              <b>{c.stage === "pro" ? t.gain.replace("+0~2", "+0~4") : t.gain}</b>
+              <b>{t.gain.replace("+0~2", `+0~${trainMax(c.stage, s.difficulty)}`)}</b>
               <span>
                 {t.cost > 0 ? `체력 −${t.cost}` : "체력 회복"}
                 <ArrowUpRight size={15} />
@@ -1435,8 +1436,8 @@ function LifeView({
       <div className="training-note">
         <BookOpen size={18} />
         <p>
-          훈련·수업·휴식은 행동력을 1씩 씁니다. 미니게임 결과(아쉬움·좋음·완벽)에 따라 능력치가 0~2
-          오르고, 바로 다음 투구와 타석부터 반영됩니다. 경기를 마치면 밤사이 체력이 25 회복되고
+          훈련·수업·휴식은 행동력을 1씩 씁니다. 미니게임 결과(아쉬움·좋음·완벽)에 따라 능력치가 0~
+          {trainMax(c.stage, s.difficulty)} 오르고, 바로 다음 투구와 타석부터 반영됩니다. 경기를 마치면 밤사이 체력이 25 회복되고
           행동력이 다시 {DAY_ACTIONS}이 됩니다.
         </p>
       </div>
@@ -2424,57 +2425,94 @@ const triggerPineTar = (engine: BaseballEngine) => {
 };
 /** Skill buttons (T cheer, G limit break, V pine tar) with their current state. */
 function SkillBar({ engine, s }: { engine: BaseballEngine; s: GameState }) {
-  const cheerOpen = s.career.stage === "pro",
-    limitOpen = engine.canLimitBreak,
-    tarOpen = !!s.career.pineTar && engine.role !== "batter";
-  if (s.mode !== "match" || (!cheerOpen && !limitOpen && !tarOpen)) return null;
+  // Cheer and limit break live on the field (SkillDock); the panel keeps the pine tar.
+  const tarOpen = !!s.career.pineTar && engine.role !== "batter";
+  if (s.mode !== "match" || !tarOpen) return null;
   return (
     <div className="skill-bar" aria-label="스킬">
-      {tarOpen && (
-        <button
-          className={`skill tar ${s.pineTar ? "on" : ""}`}
-          disabled={s.pineTar || s.ejected}
-          onClick={() => triggerPineTar(engine)}
-          title={`이번 경기 동안 구속·구위·제구 +${PINE_TAR_BOOST}. 공을 던질 때마다 ${Math.round(RULES.pineTarCatch * 100)}% 확률로 심판이 검사 · 걸리면 퇴장(패배)·모든 능력치 −${PINE_TAR_PENALTY}·불명예`}
-        >
-          <kbd>V</kbd> 🫙 파인타르
+      <button
+        className={`skill tar ${s.pineTar ? "on" : ""}`}
+        disabled={s.pineTar || s.ejected}
+        onClick={() => triggerPineTar(engine)}
+        title={`이번 경기 동안 구속·구위·제구 +${PINE_TAR_BOOST}. 공을 던질 때마다 ${Math.round(RULES.pineTarCatch * 100)}% 확률로 심판이 검사 · 걸리면 퇴장(패배)·모든 능력치 −${PINE_TAR_PENALTY}·불명예`}
+      >
+        <kbd>V</kbd> 🫙 파인타르
+        <small>
+          {s.pineTar
+            ? `효과 중 · 검사 ${Math.round(RULES.pineTarCatch * 100)}%/구`
+            : `투구 +${PINE_TAR_BOOST} · 위험`}
+        </small>
+      </button>
+    </div>
+  );
+}
+/**
+ * The two match skills on the field itself, big and always there in a match: 응원 (T) and
+ * 한계 돌파 (G). Locked ones say what opens them, so players know they exist.
+ */
+function SkillDock({ engine, s }: { engine: BaseballEngine; s: GameState }) {
+  if (s.mode !== "match" || s.phase === "finished") return null;
+  const pro = s.career.stage === "pro",
+    cheerOn = engine.cheerActive,
+    cheerState = !pro
+      ? "locked"
+      : cheerOn
+        ? "on"
+        : s.cheerUsed
+          ? "used"
+          : "ready",
+    limitOpen = engine.canLimitBreak,
+    limitOn = engine.limitActive,
+    limitState = !limitOpen ? "locked" : limitOn ? "on" : engine.autoHalf ? "wait" : "ready",
+    roleWord = engine.role === "batter" ? "타격" : engine.role === "pitcher" ? "투구" : "모든";
+  return (
+    <div className="skill-dock" aria-label="스킬">
+      <button
+        className={`dock-skill cheer ${cheerState}`}
+        disabled={cheerState !== "ready"}
+        onClick={() => triggerCheer(engine)}
+        title={`우리 팀 치어리더와 팬들의 응원으로 한 이닝 동안 상대 능력치 −${CHEER_DROP} (경기당 1회, 프로부터)`}
+      >
+        <span className="dock-icon">📣</span>
+        <span className="dock-text">
+          <b>
+            응원 <kbd>T</kbd>
+          </b>
           <small>
-            {s.pineTar
-              ? `효과 중 · 검사 ${Math.round(RULES.pineTarCatch * 100)}%/구`
-              : `투구 +${PINE_TAR_BOOST} · 위험`}
+            {cheerState === "locked"
+              ? "🔒 프로 무대부터"
+              : cheerState === "on"
+                ? `효과 중 · 상대 −${CHEER_DROP}`
+                : cheerState === "used"
+                  ? "이번 경기 사용함"
+                  : `한 이닝 상대 −${CHEER_DROP}`}
           </small>
-        </button>
-      )}
-      {cheerOpen && (
-        <button
-          className={`skill ${engine.cheerActive ? "on" : ""}`}
-          disabled={s.cheerUsed && !engine.cheerActive}
-          onClick={() => triggerCheer(engine)}
-          title={`우리 팀 치어리더와 팬들의 응원으로 한 이닝 동안 상대 능력치 −${CHEER_DROP} (경기당 1회)`}
-        >
-          <kbd>T</kbd> 📣 응원
+        </span>
+      </button>
+      <button
+        className={`dock-skill limit ${limitState}`}
+        disabled={limitState !== "ready"}
+        onClick={() => triggerLimit(engine)}
+        title={`다음 1구(던지기 또는 타격) 동안 모든 능력치 ${LIMIT_BREAK}. 경기당 ${RULES.limitBreakFree}회 무료, 이후 1회마다 체력 −${RULES.limitBreakEnergy}`}
+      >
+        <span className="dock-icon">⚡</span>
+        <span className="dock-text">
+          <b>
+            한계 돌파 <kbd>G</kbd>
+          </b>
           <small>
-            {engine.cheerActive ? "효과 중" : s.cheerUsed ? "사용함" : `상대 −${CHEER_DROP} · 1회`}
+            {limitState === "locked"
+              ? `🔒 ${roleWord} 능력치 ${LIMITLESS_CAP}`
+              : limitState === "on"
+                ? `다음 1구 능력치 ${LIMIT_BREAK}!`
+                : limitState === "wait"
+                  ? "AI 진행 중"
+                  : engine.limitCost
+                    ? `체력 −${engine.limitCost}`
+                    : `무료 ${RULES.limitBreakFree - s.limitUsed}/${RULES.limitBreakFree}`}
           </small>
-        </button>
-      )}
-      {limitOpen && (
-        <button
-          className={`skill limit ${engine.limitActive ? "on" : ""}`}
-          disabled={engine.limitActive}
-          onClick={() => triggerLimit(engine)}
-          title={`다음 투구 1회(던지기 또는 타격) 동안 모든 능력치 ${LIMIT_BREAK}. 경기당 ${RULES.limitBreakFree}회 무료, 이후 1회마다 체력 −${RULES.limitBreakEnergy}`}
-        >
-          <kbd>G</kbd> ⚡ 한계 돌파
-          <small>
-            {engine.limitActive
-              ? "다음 1구 적용"
-              : engine.limitCost
-                ? `체력 −${engine.limitCost} · 다음 1구`
-                : `무료 ${RULES.limitBreakFree - s.limitUsed}/${RULES.limitBreakFree} · 다음 1구`}
-          </small>
-        </button>
-      )}
+        </span>
+      </button>
     </div>
   );
 }
@@ -3150,6 +3188,7 @@ export default function DiamondGame() {
                 <strong>{s.message}</strong>
                 <span>{s.detail}</span>
               </div>
+              <SkillDock engine={engine} s={s} />
               <div className="field-bottom">
                 <div className="pitcher-badge">
                   <span className="uniform-number">18</span>

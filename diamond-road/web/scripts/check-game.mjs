@@ -513,7 +513,8 @@ check(
   () => {
     const g = new BaseballEngine();
     assert(g.train("bullpen").ok);
-    assert.equal(g.state.career.stats.control, 66);
+    // An ordinary session (good, base +1) ×2 on normal since v12.4.
+    assert.equal(g.state.career.stats.control, 67);
     assert.equal(g.state.career.day, 1);
     assert.equal(g.state.career.energy, 82);
     assert.equal(g.state.career.actions, DAY_ACTIONS - 1);
@@ -812,11 +813,11 @@ check("Creation spends exactly the stat budget; minigame quality sets the traini
   assert.equal(g.state.career.name, "김하늘");
   assert(g.state.career.created);
   assert.deepEqual(g.state.career.stats, even);
-  // ×1.5 since v11.4: 0 / 1.5 / 3 points, the half point carried to the next session.
+  // ×2 since v12.4 (×1.5 before): 0 / 2 / 4 points.
   for (const [q, gain] of [
     [0.1, 0],
-    [0.6, 1],
-    [0.95, 3],
+    [0.6, 2],
+    [0.95, 4],
     [0.6, 2],
   ]) {
     const before = g.state.career.stats.contact;
@@ -826,7 +827,7 @@ check("Creation spends exactly the stat budget; minigame quality sets the traini
     assert(r.ok);
     assert.equal(g.state.career.stats.contact - before, gain);
   }
-  // Easy mode doubles every session; over many sessions normal averages exactly ×1.5.
+  // Easy mode: ×3 every session; normal ×2.
   const total = (difficulty, n) => {
     const e = new BaseballEngine();
     e.createPlayer("평균", even);
@@ -838,7 +839,7 @@ check("Creation spends exactly the stat budget; minigame quality sets the traini
       e.state.career.stats.control = Math.min(e.state.career.stats.control, 70);
       const was = e.state.career.stats.control;
       assert(e.train("bullpen", 0.6).ok);
-      if (difficulty === "easy") assert.equal(e.state.career.stats.control - was, 2);
+      if (difficulty === "easy") assert.equal(e.state.career.stats.control - was, 3);
     }
     return e;
   };
@@ -853,7 +854,7 @@ check("Creation spends exactly the stat budget; minigame quality sets the traini
     normal.train("bullpen", 0.6);
     sum += normal.state.career.stats.control - was;
   }
-  assert.equal(sum, 15, "ten 'good' sessions = 15 points");
+  assert.equal(sum, 20, "ten 'good' sessions = 20 points");
 });
 check("Dream club scout watches season matches; reaching 100 brings the contract", () => {
   const g = new BaseballEngine();
@@ -879,6 +880,71 @@ check("Dream club scout watches season matches; reaching 100 brings the contract
   low.next();
   assert(low.state.lastScout.after > low.state.lastScout.before);
   assert.equal(low.state.career.draft, "");
+});
+
+check("A strong game raises the scout gauge much more than a quiet one (3–30 a match)", () => {
+  const finish = (setup) => {
+    const g = new BaseballEngine();
+    g.chooseTeam(TEAMS[0].id);
+    g.start("match");
+    g.state.inning = 3;
+    g.state.half = "bottom";
+    g.state.outs = 3;
+    setup(g);
+    g.state.phase = "result";
+    g.next();
+    return g.state.lastScout.after - g.state.lastScout.before;
+  };
+  const quiet = finish((g) => (g.state.score = [2, 0])),
+    strong = finish((g) => {
+      g.state.score = [0, 5];
+      g.state.hits = [2, 9];
+    }),
+    big = finish((g) => {
+      g.state.score = [0, 15];
+      g.state.hits = [0, 25];
+    });
+  assert(quiet >= RULES.gauge.min && quiet <= 6, `quiet loss ${quiet}`);
+  assert(strong >= 25, `5:0 win with 9 hits ${strong}`);
+  assert.equal(big, RULES.gauge.max, "one match tops out at the max");
+});
+check("Runners on base are not left crawling: dropped flies and grounders with a runner on first", () => {
+  const plays = (half, bases, fn, n = 900) => {
+    let seedN = 4242;
+    const rng = () => ((seedN = (Math.imul(1664525, seedN) + 1013904223) >>> 0) / 4294967296);
+    const g = new BaseballEngine(newCareer(), rng);
+    g.start("match");
+    for (let i = 0; i < n; i++) {
+      const s = g.state;
+      Object.assign(s, { half, phase: "ready", flight: null, live: null, outs: 0, balls: 0, strikes: 0 });
+      s.bases = [...bases];
+      g.contact(0.3 + rng() * 0.6, (rng() - 0.5) * 0.2);
+      if (s.phase !== "inplay" || s.live?.kind !== "batted") continue;
+      const l = s.live;
+      let k = 0;
+      while (s.phase === "inplay" && k++ < 4000) g.tick(1 / 60);
+      fn(l, s);
+    }
+  };
+  // A fly that drops in: the runner from first used to crawl until it landed and be forced
+  // out at second (43%).
+  let drops = 0,
+    forced = 0;
+  plays("bottom", [true, false, false], (l) => {
+    if (l.ground || l.lineDrive || l.caughtFly) return;
+    drops++;
+    if (l.runners.find((r) => r.id === 1)?.out) forced++;
+  });
+  assert(drops > 30 && forced / drops < 0.15, `dropped flies: runner out ${forced}/${drops}`);
+  // Grounders with a runner on first, nobody out: double plays used to be two in three.
+  let grounders = 0,
+    dp = 0;
+  plays("bottom", [true, false, false], (l, s) => {
+    if (!l.ground) return;
+    grounders++;
+    if (s.message === "DOUBLE PLAY") dp++;
+  });
+  assert(grounders > 200 && dp / grounders < 0.4 && dp / grounders > 0.08, `double plays ${dp}/${grounders}`);
 });
 
 // ── v05: hit by pitch, wild pitch, pickoff, E steal, running/fly returns, pro mode, pitches ──
@@ -1563,8 +1629,8 @@ check("Stat caps: 100 in high school, 200 in the pros, where the fastball reache
   assert(pro.train("bullpen", 1).ok);
   assert.equal(
     pro.state.career.stats.control,
-    before + 6,
-    "pro training gains are doubled (×1.5 → 6)",
+    before + 8,
+    "pro training gains are doubled (×2 → 8)",
   );
   pro.devSetStats(200);
   assert(Object.values(pro.state.career.stats).every((v) => v === 200));
@@ -1737,8 +1803,8 @@ check("Hidden knuckleball: secret unlock at minimum velocity and movement 75+", 
     Object.assign(c.stats, { velocity, movement });
     return new BaseballEngine(c, seed(3));
   };
-  // Training movement 74 → 75 with velocity still at the creation minimum unlocks it.
-  const g = at(45, 74);
+  // Training movement 73 → 75 (+2 a session) with velocity at the creation minimum unlocks it.
+  const g = at(45, 73);
   assert(g.train("breaking", 0.6).ok);
   assert.equal(g.state.career.stats.movement, 75);
   assert(g.state.career.pitches.includes("knuckle"));
@@ -1751,8 +1817,8 @@ check("Hidden knuckleball: secret unlock at minimum velocity and movement 75+", 
   assert(g.state.career.pitches.includes("knuckle"));
   // One point of velocity training, or movement below 75, keeps it locked.
   for (const [v, m] of [
-    [46, 74],
-    [45, 73],
+    [46, 73],
+    [45, 72],
   ]) {
     const x = at(v, m);
     x.train("breaking", 0.6);
@@ -2103,7 +2169,7 @@ check(
       again.state.career.energy = 100;
       again.state.career.actions = 5;
       assert(again.train("bullpen", 1).ok, "training past 200 in the major league");
-      assert.equal(again.state.career.stats.control, 246, "pro ×2 and ×1.5: +6");
+      assert.equal(again.state.career.stats.control, 248, "pro ×2 and ×2: +8");
     } finally {
       delete globalThis.localStorage;
     }

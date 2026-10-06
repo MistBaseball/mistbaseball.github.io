@@ -652,6 +652,32 @@ export const RULES = {
   /** ...scaled down for shallow flies: full share at flyReadFar (m), 20% at flyReadNear or less. */
   flyReadNear: 30,
   flyReadFar: 90,
+  /** Reading runners decide this long after contact (s): if no fielder can get there in time
+   *  (by flyReadMargin s, i.e. not even with a dive) the ball is dropping, so they run at full
+   *  speed. (Crawling until it landed left the forced runner barely off first while the
+   *  batter was most of the way there: 26–43% of them were forced out on a dropped liner.) */
+  flyReadDecide: 0.45,
+  lineReadDecide: 0.2,
+  /** Secondary lead (m off the bag) a runner has when the ball is hit. */
+  hitLead: 3.5,
+  /** Double-play pivot: from the force at the bag to the throw on (s). At 0.3 s two of three
+   *  grounders with a runner on first were turned into double plays (real: about 1 in 8). */
+  pivotHold: 0.85,
+  /** Scout / trust gauge after a match (points): a strong game gains much more (v12.4: was
+   *  play 7, strikeout 1, hit 1, allowed −1, win 5, at most 18). */
+  gauge: {
+    play: 5,
+    strikeout: 1.5,
+    hit: 1.5,
+    run: 1,
+    allowed: 1,
+    win: 6,
+    shutout: 4,
+    min: 3,
+    max: 30,
+    mlbMax: 22,
+  },
+  flyReadMargin: 0.45,
 };
 export type Stage = "high" | "pro";
 /**
@@ -742,8 +768,8 @@ export const DIFFICULTIES: { id: Difficulty; label: string; note: string }[] = [
   { id: "impossible", label: "불가능", note: "아주 빠른 승부" },
   { id: "hard", label: "어려움", note: "빠른 승부" },
   { id: "normal", label: "보통", note: "" },
-  { id: "easy", label: "쉬움", note: "여유로운 타이밍 · 훈련 2배" },
-  { id: "baby", label: "응애", note: "아주 여유로운 타이밍 · 훈련 2배" },
+  { id: "easy", label: "쉬움", note: "여유로운 타이밍 · 훈련 1.5배" },
+  { id: "baby", label: "응애", note: "아주 여유로운 타이밍 · 훈련 1.5배" },
 ];
 const DIFF_KEY = "diamond-road-difficulty";
 const SOUND_KEY = "diamond-road-sound";
@@ -828,21 +854,25 @@ export const SWING_STYLES: Record<
 export const batReach = (contact: number, style: SwingStyle) =>
   (0.12 + clamp(over(contact), 0, 150) * 0.001) * SWING_STYLES[style].reach;
 /** Experience points: in-match plays, match result and daily actions. */
-/** Training stat gain multiplier: easy mode doubles it, otherwise ×1.5 (v11.4). */
+/** Training stat gain multiplier: ×2 (×3 on easy and baby) since v12.4 (×1.5 / ×2 before). */
 export const trainMultiplier = (difficulty: Difficulty) =>
-  difficulty === "easy" || difficulty === "baby" ? 2 : 1.5;
-/** Experience (구종 상점). Raised ×1.5 in v11.3: friends found the first days slow. */
+  difficulty === "easy" || difficulty === "baby" ? 3 : 2;
+/** Most a training session can raise a stat (a perfect minigame) on this stage and difficulty. */
+export const trainMax = (stage: Stage, difficulty: Difficulty) =>
+  2 * (STAGES[stage] ?? STAGES.high).trainGain * trainMultiplier(difficulty);
+/** Experience (구종 상점). Raised ×1.5 in v11.3, then about ×0.7 in v12.4 (pitches came
+ *  too fast). */
 export const XP = {
-  strikeout: 8,
-  out: 3,
-  walk: 3,
-  hit: [0, 10, 15, 20, 30] as const,
-  run: 6,
-  complete: 60,
-  win: 45,
-  draw: 18,
-  training: 12,
-  rest: 5,
+  strikeout: 6,
+  out: 2,
+  walk: 2,
+  hit: [0, 7, 10, 14, 21] as const,
+  run: 4,
+  complete: 40,
+  win: 30,
+  draw: 12,
+  training: 8,
+  rest: 3,
 };
 /** Actions (training, rest, study) available each day before the day's match. */
 export const DAY_ACTIONS = 5;
@@ -1147,10 +1177,12 @@ export const TIER_BALANCE: Record<Tier, { aiPower: number; batBoost: number }> =
   // Measured with AI steals, tag-ups, hitbox tags/slides, the runner AI and errors
   // (normal-player bot, 32 careers, 3 innings): see docs/CHANGELOG.md (v11.16: rival homers
   // squeezed, so the rivals hit a bit harder overall and our boost is lower).
-  high: { aiPower: 1.0, batBoost: -0.06 },
-  farm: { aiPower: 1.14, batBoost: 0.055 },
-  first: { aiPower: 1.04, batBoost: 0.008 },
-  mlb: { aiPower: 1.01, batBoost: 0.018 },
+  // v12.4: runners no longer crawl on dropped flies or start on the bag, so our side scores
+  // more; the boost comes down 0.035 to keep normal near half the games.
+  high: { aiPower: 1.0, batBoost: -0.095 },
+  farm: { aiPower: 1.14, batBoost: 0.02 },
+  first: { aiPower: 1.04, batBoost: -0.027 },
+  mlb: { aiPower: 1.01, batBoost: -0.017 },
 };
 const NEUTRAL_BALANCE = { aiPower: 1, batBoost: 0 };
 /** What the career gauge measures in this tier. */
@@ -1953,6 +1985,8 @@ export type LivePlay = {
   };
   /** An outfielder took over a grounder that got through the infield. */
   backedUp?: boolean;
+  /** Runners have read the fly (dropping: running at full speed). */
+  readDone?: boolean;
   /** Relay planned or under way: the cutoff man, his spot and the base it goes on to. */
   relay?: { who: number; spot: Vec; base: number };
   /** Next play time the chase assignment is re-read. */
@@ -3582,11 +3616,13 @@ export class BaseballEngine {
         return {
           id: i,
           from: i,
-          // On a bunt the runners have their lead and break as soon as the ball is down.
+          // Runners have their lead when the ball is hit (they used to start on the bag:
+          // most grounders with a runner on first became double plays). One waiting to tag
+          // up stays on the bag.
           progress: jump
             ? jump.progress
-            : i > 0 && bunt
-              ? i + RULES.runnerLead / BASE_PATH_LENGTH
+            : i > 0 && !tagReady
+              ? i + (bunt ? RULES.runnerLead : RULES.hitLead) / BASE_PATH_LENGTH
               : i,
           // Batter and runners run while the ball is alive (a runner ready to tag up waits).
           target: tagReady ? i : Math.min(4, i + bases),
@@ -3921,6 +3957,35 @@ export class BaseballEngine {
    * among those whose range (FIELD_ZONES) holds that spot, the quickest takes it (fly balls:
    * an outfielder who can make the catch calls the infielders off).
    */
+  /**
+   * A moment after contact the runners read the fly: when nobody will get there in time it is
+   * dropping, and they stop holding back (full speed; a runner waiting to tag up goes too).
+   */
+  private readFly(l: LivePlay) {
+    if (l.readDone || l.ground || l.bounced || l.caughtFly || l.kind !== "batted") return;
+    // A line drive is read almost at once; a fly takes a moment to judge.
+    if (l.elapsed + 1e-8 < (l.lineDrive ? RULES.lineReadDecide : RULES.flyReadDecide)) return;
+    l.readDone = true;
+    if (this.state.outs >= 2) return; // with two outs they were running all along
+    // Soonest any fielder gets to the catch point (the catcher only on a bunt).
+    let soonest = Infinity;
+    for (let i = 0; i < 9; i++) {
+      if (i === 1 && !l.bunt) continue;
+      const { speed, reaction } = this.fielderStats(i, l),
+        from = l.defenders[i];
+      soonest = Math.min(
+        soonest,
+        Math.max(l.elapsed, reaction) +
+          Math.hypot(l.catchPoint.x - from.x, l.catchPoint.z - from.z) / speed,
+      );
+    }
+    if (soonest < l.catchAt + RULES.flyReadMargin) return;
+    for (const r of l.runners) {
+      if (r.id === 0 || r.out) continue;
+      r.pace = r.fullPace ?? r.pace;
+      if (r.target <= r.from) r.target = Math.min(4, r.from + Math.max(1, l.resultBases));
+    }
+  }
   private chaseChoice(l: LivePlay) {
     const fly = !l.ground && !l.bounced,
       out: { i: number; score: number; inZone: boolean }[] = [];
@@ -5163,6 +5228,7 @@ export class BaseballEngine {
         } else if (!s.autoField && !this.batting && distance(DEFENSE[l.fielder], l.catchPoint) < 18)
           l.error = true;
       }
+      this.readFly(l);
       if (!l.caughtFly && l.elapsed + 1e-8 >= l.flightTime && !l.bounced) {
         l.bounced = true;
         // Extra bases depend on how far the fielder still is from the ball, capped by distance.
@@ -5394,6 +5460,8 @@ export class BaseballEngine {
             const relay = this.chooseThrow(l, true);
             if (relay) {
               l.fieldedAt = l.elapsed;
+              // The pivot: catch, step off the bag (or away from the slide), and throw.
+              l.hold = RULES.pivotHold;
               l.throw = null;
               l.requestedBase = relay;
               l.state = "포구";
@@ -6041,20 +6109,29 @@ export class BaseballEngine {
       // recap always adds up to the real gain.
       const won = !ejected && s.score[1] > s.score[0],
         drew = !ejected && s.score[1] === s.score[0],
-        parts: RecapLine[] = [{ label: "경기 출전", value: 7 }];
+        G = RULES.gauge,
+        parts: RecapLine[] = [{ label: "경기 출전", value: G.play }];
+      // A strong game counts for a lot more (v12.4): strikeouts, hits, runs and a win (more
+      // for a shutout), so a good player is not stuck grinding the first days.
       if (this.matchStrikeouts)
-        parts.push({ label: `탈삼진 ${this.matchStrikeouts}개`, value: this.matchStrikeouts });
-      if (s.hits[1]) parts.push({ label: `팀 안타 ${s.hits[1]}개`, value: s.hits[1] });
-      if (s.score[0]) parts.push({ label: `실점 ${s.score[0]}`, value: -s.score[0] });
-      if (won) parts.push({ label: "승리", value: 5 });
+        parts.push({
+          label: `탈삼진 ${this.matchStrikeouts}개`,
+          value: Math.round(this.matchStrikeouts * G.strikeout),
+        });
+      if (s.hits[1])
+        parts.push({ label: `팀 안타 ${s.hits[1]}개`, value: Math.round(s.hits[1] * G.hit) });
+      if (s.score[1]) parts.push({ label: `득점 ${s.score[1]}`, value: s.score[1] * G.run });
+      if (s.score[0]) parts.push({ label: `실점 ${s.score[0]}`, value: -s.score[0] * G.allowed });
+      if (won) parts.push({ label: "승리", value: G.win });
+      if (won && !s.score[0]) parts.push({ label: "무실점 승리", value: G.shutout });
       const raw = parts.reduce((a, p) => a + p.value, 0),
-        bounded = clamp(raw, 3, 18);
+        bounded = clamp(raw, G.min, G.max);
       if (bounded !== raw)
         parts.push({
-          label: bounded > raw ? "최소 보장(3)" : "한 경기 최대(18)",
+          label: bounded > raw ? `최소 보장(${G.min})` : `한 경기 최대(${G.max})`,
           value: bounded - raw,
         });
-      const scaled = clamp(Math.round(bounded * this.stageRules.gaugeGain), 2, 18);
+      const scaled = clamp(Math.round(bounded * this.stageRules.gaugeGain), 2, G.max);
       if (scaled !== bounded)
         parts.push({ label: `프로 기준 ×${this.stageRules.gaugeGain}`, value: scaled - bounded });
       const gain = scaled;
@@ -6096,7 +6173,7 @@ export class BaseballEngine {
                   : t.focus === "hits"
                     ? s.hits[1] * 0.9
                     : Math.max(0, 6 - s.score[0]) * 1.2,
-            gain = Math.round(clamp(bounded * 0.45 + liked, 2, 16));
+            gain = Math.round(clamp(bounded * 0.45 + liked, 2, G.mlbMax));
           scouts[t.id] = clamp(before + gain, 0, 100);
           if (before < 100 && scouts[t.id] >= 100)
             c.history = [`${t.city} ${t.name} 스카우트가 계약 제안을 들고 기다린다`, ...c.history];
@@ -6180,7 +6257,7 @@ export class BaseballEngine {
     const q = clamp(Number.isFinite(quality) ? quality : 0, 0, 1),
       grade = q >= 0.85 ? "완벽" : q >= 0.4 ? "좋음" : "아쉬움";
     if (o.stat) {
-      // ×1.5 (×2 on easy) since v11.4. Stats stay whole numbers: the fraction is carried over
+      // ×2 (×3 on easy) since v12.4. Stats stay whole numbers: the fraction is carried over
       // to the next session (`trainCarry`), so on average nothing is lost.
       const base = (q >= 0.85 ? 2 : q >= 0.4 ? 1 : 0) * this.stageRules.trainGain,
         raw = base * trainMultiplier(s.difficulty) + (base > 0 ? (c.trainCarry ?? 0) : 0);

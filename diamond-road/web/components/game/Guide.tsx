@@ -1,7 +1,7 @@
 /**
  * 조작법 window (replaces the old step-by-step tutorial): five tabs that can be opened at any
- * time from the header (or H). The game pauses while it is open. The 히든 tab never states a
- * hidden condition, it only tells the player that hints exist.
+ * time from the header (or H). The game pauses while it is open. Hidden conditions are never
+ * stated plainly: every tab carries riddle-like hints (small italic notes) instead.
  */
 import { useState } from "react";
 import { Play } from "lucide-react";
@@ -21,6 +21,13 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "batter", label: "타자" },
   { id: "hidden", label: "히든" },
 ];
+
+/** A hidden hint: a small italic note (a riddle, never the condition itself). */
+const Hint = ({ from, children }: { from: string; children: React.ReactNode }) => (
+  <p className="hidden-hint guide-hint">
+    {from} · &ldquo;{children}&rdquo;
+  </p>
+);
 
 const Keys = ({ rows }: { rows: [string[], string][] }) => (
   <dl className="guide-keys">
@@ -45,7 +52,8 @@ function Rules() {
         <ul>
           <li>
             <b>아침</b>: 행동력 5로 훈련·수업·휴식을 합니다(1번에 1씩). 훈련은 미니게임 결과에 따라
-            능력치가 오릅니다(보통 0~3, 설정에서 난이도 &lsquo;쉬움&rsquo;·&lsquo;응애&rsquo;면 2배).
+            능력치가 오릅니다(고교 0~4, 프로 0~8, 설정에서 난이도
+            &lsquo;쉬움&rsquo;·&lsquo;응애&rsquo;면 1.5배).
           </li>
           <li>
             <b>오후</b>: 시즌 경기 한 판. 경기를 끝내야 다음 날이 됩니다.
@@ -86,6 +94,22 @@ function Rules() {
           </li>
           <li>로고 옆 명예의 전당에서 친구들과 기록을 겨룹니다.</li>
         </ul>
+        <Hint from="스카우트 수첩 마지막 장">
+          모든 제안을 웃으며 거절한 선수가 있었다. 그날 이후 그의 한계는 사라졌다.
+        </Hint>
+      </section>
+      <section>
+        <h3>경기 결과와 평가</h3>
+        <ul>
+          <li>
+            경기마다 스카우트 평가(프로에서는 신뢰도)가 3~30점 오릅니다. 탈삼진·안타·득점·승리가
+            많을수록, 무실점으로 이기면 더 많이 올라요.
+          </li>
+        </ul>
+        <Hint from="선수 등록 서류 뒷면 낙서">
+          처음부터 정상에 선 신입이 딱 한 명 있었다. 그는 등록 서류에 바다 건너 &lsquo;두 개의
+          칼&rsquo;의 이름을 적었다.
+        </Hint>
       </section>
     </>
   );
@@ -138,6 +162,9 @@ function Logic() {
             나옵니다.
           </li>
         </ul>
+        <Hint from="포수 미트 안쪽 낙서">
+          빠르지 않아도 된다. 회전 없이 춤추는 공은 아무도 잡지 못한다.
+        </Hint>
       </section>
     </>
   );
@@ -179,6 +206,16 @@ function Pitcher() {
           </li>
           <li>&lsquo;고의4구&rsquo; 버튼은 타자를 바로 1루에 보냅니다.</li>
         </ul>
+      </section>
+      <section>
+        <h3>투수 코치의 쪽지</h3>
+        <Hint from="은퇴한 투수의 회고록">
+          나는 빠른 공을 처음부터 버렸다. 단 1도 올리지 않았지. 대신 공이 휘는 힘만 75 넘게
+          갈고닦았다.
+        </Hint>
+        <Hint from="불펜 벤치 밑 끈적한 통">
+          심판 몰래 바르면 공이 손에 착 붙는다. 들키면… 끝장이다.
+        </Hint>
       </section>
     </>
   );
@@ -226,6 +263,15 @@ function Batter() {
           </li>
         </ul>
       </section>
+      <section>
+        <h3>타격 코치의 쪽지</h3>
+        <Hint from="라커룸 명판">
+          던지고 치는 두 칼을 모두 쥔 자, 이름 하나로 시작부터 전설이 된다.
+        </Hint>
+        <Hint from="배팅 케이지 철망에 걸린 메모">
+          250을 넘긴 자에게만 들리는 소리가 있다. 경기 중 G를 눌러 봐라.
+        </Hint>
+      </section>
     </>
   );
 }
@@ -256,6 +302,20 @@ function Hidden() {
           </li>
           <li>힌트를 풀었다면 친구에게는 비밀로!</li>
         </ul>
+      </section>
+      <section>
+        <h3>모아 둔 쪽지</h3>
+        <Hint from="쪽지 ①">빠르기는 처음 그대로, 휘는 힘은 75 너머. 그러면 공이 춤을 춘다.</Hint>
+        <Hint from="쪽지 ②">
+          잠긴 문을 틀린 열쇠로 세 번 두드리면, 누군가 몰래 끈적한 통을 건넨다. 두 번째에 경고를
+          들어도 멈추지 말 것.
+        </Hint>
+        <Hint from="쪽지 ③">바다 건너 이도류. 그의 이름이 곧 열쇠다.</Hint>
+        <Hint from="쪽지 ④">메이저리그 네 구단이 모두 손을 내밀 때, 모두 거절해 보라.</Hint>
+        <Hint from="쪽지 ⑤">
+          내 역할의 능력치가 모두 250에 닿으면, 한 공에 한해 300의 힘을 빌릴 수 있다.
+        </Hint>
+        <Hint from="찢어진 쪽지">…아직 아무도 찾지 못한 것이 하나 더 있을지도…</Hint>
       </section>
     </>
   );
@@ -335,10 +395,13 @@ export function GuideNotice({
             1분만 읽어 보는 걸 추천해요. 로고 옆 &lsquo;조작법&rsquo; 버튼이나 <kbd>H</kbd>로 언제든
             다시 볼 수 있어요.
           </DialogDescription>
+          <p className="guide-notice-hint">
+            🔍 그리고… 조작법 곳곳에 <b>히든 요소의 힌트</b>가 숨어 있을지도…?
+          </p>
         </DialogHeader>
         <div className="guide-notice-actions">
           <button className="primary-button" onClick={onRead}>
-            조작법 보기
+            조작법 보기 (히든 힌트 찾기)
           </button>
           <button className="subtle-button" onClick={onLater}>
             나중에
