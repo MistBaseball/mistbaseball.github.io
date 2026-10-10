@@ -846,8 +846,10 @@ export const SWING_STYLES: Record<
     spread: [number, number];
   }
 > = {
-  contact: { reach: 1.15, window: 1.15, cut: 1.5, foulBelow: 0.3, boost: 0.02, spread: [0.7, 0.2] },
-  power: { reach: 0.4, window: 0.45, cut: 0, foulBelow: 0.5, boost: 0.1, spread: [0.7, 0.35] },
+  // v12.5: power was nearly impossible to hit (bat area 0.4, window 0.45: average .04, 65%
+  // strikeouts) and contact did everything. Now power trades contact for real extra bases.
+  contact: { reach: 1.1, window: 1.1, cut: 1.3, foulBelow: 0.3, boost: 0.02, spread: [0.7, 0.2] },
+  power: { reach: 0.68, window: 0.72, cut: 0, foulBelow: 0.42, boost: 0.09, spread: [0.78, 0.42] },
   bunt: { reach: 1.4, window: 1.3, cut: 0, foulBelow: 0.15, boost: 0, spread: [1, 0] },
 };
 /** How far (m) the bat aim may miss the ball and still make contact. */
@@ -1179,10 +1181,12 @@ export const TIER_BALANCE: Record<Tier, { aiPower: number; batBoost: number }> =
   // squeezed, so the rivals hit a bit harder overall and our boost is lower).
   // v12.4: runners no longer crawl on dropped flies or start on the bag, so our side scores
   // more; the boost comes down 0.035 to keep normal near half the games.
-  high: { aiPower: 1.0, batBoost: -0.095 },
-  farm: { aiPower: 1.14, batBoost: 0.02 },
-  first: { aiPower: 1.04, batBoost: -0.027 },
-  mlb: { aiPower: 1.01, batBoost: -0.017 },
+  // v12.5: contact swings were trimmed (power made useful), +0.025 back for everyone so a
+  // contact-only player still wins about half on normal.
+  high: { aiPower: 1.0, batBoost: -0.07 },
+  farm: { aiPower: 1.14, batBoost: 0.045 },
+  first: { aiPower: 1.04, batBoost: -0.002 },
+  mlb: { aiPower: 1.01, batBoost: 0.008 },
 };
 const NEUTRAL_BALANCE = { aiPower: 1, batBoost: 0 };
 /** What the career gauge measures in this tier. */

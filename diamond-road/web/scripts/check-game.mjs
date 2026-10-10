@@ -1526,6 +1526,8 @@ check("Swing styles: contact is forgiving, power is narrow but carries, bunts di
   const c = SWING_STYLES.contact,
     p = SWING_STYLES.power;
   assert(p.reach < c.reach && p.window < c.window && p.boost > c.boost);
+  // ...but power stays hittable (v12.5: at 0.4 × 0.45 it hit about .040 with 65% strikeouts).
+  assert(p.reach >= 0.6 && p.window >= 0.6, "power is narrow, not hopeless");
   assert(c.cut > 1 && p.cut === 0);
   assert(swingWindow("normal", "high", "power") < swingWindow("normal", "high", "contact"));
   // A contact near miss is fouled off; the same swing with power is a strike.
@@ -1542,7 +1544,7 @@ check("Swing styles: contact is forgiving, power is narrow but carries, bunts di
       reach = batReach(g.state.career.stats.contact, "contact");
     f.swung = true;
     f.swingTime = SWING_SWEET * f.visualDuration;
-    f.batAim = { x: f.target.x + reach * 1.3, y: f.target.y, z: 0 };
+    f.batAim = { x: f.target.x + reach * 1.2, y: f.target.y, z: 0 };
     while (g.state.phase === "flight") g.tick(1 / 60);
     assert.equal(g.state.lastOutcome === "Foul", foul, style);
     assert.equal(g.state.outs, foul ? 0 : 1, "two-strike near miss: contact survives");

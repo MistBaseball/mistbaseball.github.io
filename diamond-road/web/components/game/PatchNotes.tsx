@@ -17,6 +17,15 @@ type Patch = { version: string; date: string; title: string; items: string[] };
 
 export const PATCHES: Patch[] = [
   {
+    version: "v12.5",
+    date: "10/10",
+    title: "강타 살리기",
+    items: [
+      "강타 스윙이 거의 맞지 않던 문제(평균 타율 .04, 삼진 65%): 배트가 닿는 범위와 타이밍 창을 넓히고 장타가 더 잘 나오게 했습니다. 이제 강타는 삼진이 많은 대신 홈런·장타가 나오는 승부수예요.",
+      "컨택 스윙은 범위와 '아슬아슬하면 파울' 범위를 조금 줄였습니다. 안정적으로 맞히지만 장타는 거의 없어요.",
+    ],
+  },
+  {
     version: "v12.4",
     date: "10/06",
     title: "주루 개선 · 성장 속도 · 스킬 버튼",

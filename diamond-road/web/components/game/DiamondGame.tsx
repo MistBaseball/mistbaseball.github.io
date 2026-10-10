@@ -3476,7 +3476,7 @@ export default function DiamondGame() {
                 <div className="pp-swings">
                   {[
                     { id: "contact", name: "컨택", sub: "넓게 · 아슬하면 파울" },
-                    { id: "power", name: "강타", sub: "아주 좁게 · 장타" },
+                    { id: "power", name: "강타", sub: "좁게 · 삼진 많지만 장타" },
                     { id: "bunt", name: "번트", sub: "짧게 굴려 진루" },
                   ].map((p) => (
                     <button
