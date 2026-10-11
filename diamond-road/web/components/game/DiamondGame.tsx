@@ -35,7 +35,7 @@ import {
 import { TrainingMinigame, TRAINING_GAMES } from "@/components/game/Minigames";
 import { PatchNotesButton } from "@/components/game/PatchNotes";
 import { HallOfFameButton, HofResetForm } from "@/components/game/HallOfFame";
-import { CloudSave, pullCareer, syncCareer } from "@/components/game/CloudSave";
+import { CloudSave, CodeLoader, pullCareer, syncCareer } from "@/components/game/CloudSave";
 import { AiLab } from "@/components/game/AiLab";
 import { Sfx } from "@/lib/game/sound";
 import { AI_LEVELS, applyLevel } from "@/lib/ai/levels";
@@ -83,6 +83,7 @@ import {
   STAGES,
   trainMax,
   statCapOf,
+  statBuyTotal,
   LEGEND_PITCHES,
   formOf,
   tierOf,
@@ -837,8 +838,7 @@ function LineupEditor({ engine, s }: { engine: BaseballEngine; s: GameState }) {
           ? `투수만 모드라 내 자리에는 지명타자가 ${me + 1}번으로 섭니다.`
           : `나는 ${me + 1}번 타자.`}{" "}
         선수를 위아래로 끌어서(또는 ▲▼로) 타순을 바꿀 수 있어요(수비 위치는 그대로). 스윙은 모두
-        내가 조작하고, 내 능력치
-        평균이 오르면 동료 능력치도 그 75%만큼 함께 오릅니다.
+        내가 조작하고, 내 능력치 평균이 오르면 동료 능력치도 그 75%만큼 함께 오릅니다.
         {locked && <b className="lineup-lock"> 경기 중에는 타순을 바꿀 수 없어요.</b>}
       </p>
       <ol className={`team-lineup editable ${locked ? "locked" : ""}`}>
@@ -1320,6 +1320,50 @@ function LifeView({
       </div>
       <div className="section-intro shop-intro">
         <div>
+          <h2>능력치 구매</h2>
+          <p>
+            경험치로 능력치를 직접 올립니다. 행동력은 들지 않지만, 능력치가 높을수록 한 포인트가
+            비싸요. 경기 중에는 살 수 없어요.
+          </p>
+        </div>
+        <span className="season-stamp">
+          보유 <b>{c.xp} XP</b>
+        </span>
+      </div>
+      <div className="stat-shop">
+        {statKeys.map((k) => {
+          const v = c.stats[k],
+            cap = statCapOf(c);
+          return (
+            <div key={k} className="stat-buy">
+              <span className="stat-buy-name">
+                {statNames[k]}
+                <b>{v}</b>
+                <small>상한 {cap}</small>
+              </span>
+              {[1, 5].map((n) => {
+                const cost = statBuyTotal(v, n, cap);
+                return (
+                  <button
+                    key={n}
+                    className="subtle-button"
+                    disabled={live || cost === null || c.xp < cost}
+                    onClick={() => {
+                      const r = engine.buyStat(k, n);
+                      r.ok ? toast.success(r.message) : toast.error(r.message);
+                    }}
+                  >
+                    +{n}
+                    <small>{cost === null ? "상한" : `${cost} XP`}</small>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+      <div className="section-intro shop-intro">
+        <div>
           <h2>구종 상점</h2>
           <p>
             경기에서 모은 경험치로 새 구종을 익힙니다. 익힌 구종은 투구 플랜에서 바로 선택됩니다.
@@ -1437,8 +1481,8 @@ function LifeView({
         <BookOpen size={18} />
         <p>
           훈련·수업·휴식은 행동력을 1씩 씁니다. 미니게임 결과(아쉬움·좋음·완벽)에 따라 능력치가 0~
-          {trainMax(c.stage, s.difficulty)} 오르고, 바로 다음 투구와 타석부터 반영됩니다. 경기를 마치면 밤사이 체력이 25 회복되고
-          행동력이 다시 {DAY_ACTIONS}이 됩니다.
+          {trainMax(c.stage, s.difficulty)} 오르고, 바로 다음 투구와 타석부터 반영됩니다. 경기를
+          마치면 밤사이 체력이 25 회복되고 행동력이 다시 {DAY_ACTIONS}이 됩니다.
         </p>
       </div>
       <CareerView engine={engine} s={s} />
@@ -1457,7 +1501,15 @@ const ROLES: { id: Role; label: string; desc: string }[] = [
 ];
 const statKeys = Object.keys(statNames) as (keyof Career["stats"])[];
 /** First screen: choose a name and spread the starting stat points. */
-function CreationDialog({ engine, s }: { engine: BaseballEngine; s: GameState }) {
+function CreationDialog({
+  engine,
+  s,
+  onLoaded,
+}: {
+  engine: BaseballEngine;
+  s: GameState;
+  onLoaded: () => void;
+}) {
   const needsTeam = !s.career.team;
   // New players: story → dream club → name & stats. Older saves only pick a club.
   const [step, setStep] = useState(0);
@@ -1550,15 +1602,23 @@ function CreationDialog({ engine, s }: { engine: BaseballEngine; s: GameState })
             <button className="primary-button" onClick={() => setStep(1)}>
               꿈의 구단 고르기 <ChevronRight size={16} />
             </button>
+            <div className="start-load">
+              <b>이미 계정이 있나요?</b>
+              <small>
+                저장 코드(설정에서 발급)를 입력하면 새로 만들 필요 없이 내 선수와 난이도 그대로
+                이어서 합니다.
+              </small>
+              <CodeLoader engine={engine} onLoaded={onLoaded} />
+            </div>
           </>
         ) : (
           <>
             <DialogHeader>
               <DialogTitle>선수 등록</DialogTitle>
               <DialogDescription>
-                {teamOf(team)?.name} 입단을 꿈꾸는 미산고 3학년. 역할을 고르고(나중에 못 바꿈) 이름을
-                정한 뒤, 자유 능력치 {STAT_POINTS}포인트를 원하는 곳에 찍어 주세요. 모든 능력은{" "}
-                {STAT_BASE}에서 시작해 최대 {STAT_CAP}까지 올릴 수 있습니다.
+                {teamOf(team)?.name} 입단을 꿈꾸는 미산고 3학년. 역할을 고르고(나중에 못 바꿈)
+                이름을 정한 뒤, 자유 능력치 {STAT_POINTS}포인트를 원하는 곳에 찍어 주세요. 모든
+                능력은 {STAT_BASE}에서 시작해 최대 {STAT_CAP}까지 올릴 수 있습니다.
               </DialogDescription>
             </DialogHeader>
             <label className="creation-name">
@@ -1586,9 +1646,9 @@ function CreationDialog({ engine, s }: { engine: BaseballEngine; s: GameState })
             </div>
             {role !== "two-way" && (
               <p className="creation-notice">
-                📢 <b>공지</b> · {role === "pitcher" ? "투수만" : "타자만"}을 골라도 투수·타자 능력치는
-                모두 내 선수의 능력치입니다. AI가 대신하는 쪽도 훈련으로 올려야 해요(명예의 전당 종합
-                점수에도 모든 능력치가 들어갑니다).
+                📢 <b>공지</b> · {role === "pitcher" ? "투수만" : "타자만"}을 골라도 투수·타자
+                능력치는 모두 내 선수의 능력치입니다. AI가 대신하는 쪽도 훈련으로 올려야 해요(명예의
+                전당 종합 점수에도 모든 능력치가 들어갑니다).
               </p>
             )}
             <div className="creation-difficulty" role="radiogroup" aria-label="난이도">
@@ -2454,13 +2514,7 @@ function SkillDock({ engine, s }: { engine: BaseballEngine; s: GameState }) {
   if (s.mode !== "match" || s.phase === "finished") return null;
   const pro = s.career.stage === "pro",
     cheerOn = engine.cheerActive,
-    cheerState = !pro
-      ? "locked"
-      : cheerOn
-        ? "on"
-        : s.cheerUsed
-          ? "used"
-          : "ready",
+    cheerState = !pro ? "locked" : cheerOn ? "on" : s.cheerUsed ? "used" : "ready",
     limitOpen = engine.canLimitBreak,
     limitOn = engine.limitActive,
     limitState = !limitOpen ? "locked" : limitOn ? "on" : engine.autoHalf ? "wait" : "ready",
@@ -2680,14 +2734,22 @@ export default function DiamondGame() {
         } else if (r === "other-career") {
           saveCode(null);
           toast("저장 코드 연결을 풀었어요", {
-            description: "그 코드는 다른 선수의 기록이에요. 이 선수는 설정에서 새 코드를 받아 주세요.",
+            description:
+              "그 코드는 다른 선수의 기록이에요. 이 선수는 설정에서 새 코드를 받아 주세요.",
           });
         }
       });
     }, 1500);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.career.games, s.career.day, s.career.stage, s.career.league, s.career.name, s.career.hofNick]);
+  }, [
+    s.career.games,
+    s.career.day,
+    s.career.stage,
+    s.career.league,
+    s.career.name,
+    s.career.hofNick,
+  ]);
   const stage = useRef<HTMLDivElement>(null);
   const sfx = useRef(new Sfx());
   // A quiet crowd murmur under matches (only with match sounds on).
@@ -2944,7 +3006,7 @@ export default function DiamondGame() {
   return (
     <main className="diamond-app">
       <Toaster theme="dark" position="bottom-center" />
-      <CreationDialog engine={engine} s={s} />
+      <CreationDialog engine={engine} s={s} onLoaded={() => setView("life")} />
       <BlessingDialog engine={engine} s={s} onFinish={() => setRouletteDone(true)} />
       <HiddenDialog engine={engine} s={s} />
       <NightDialog s={s} recap={recap} onClose={() => setRecap(null)} />

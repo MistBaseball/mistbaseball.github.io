@@ -6029,3 +6029,62 @@ kbd {
     animation: none;
   }
 }
+
+/* Start screen: load an account by its save code. */
+.start-load {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px dashed rgba(244, 212, 140, 0.5);
+  background: rgba(244, 212, 140, 0.06);
+}
+.start-load small {
+  opacity: 0.8;
+  line-height: 1.4;
+}
+
+/* Spend XP on stats (below the training cards). */
+.stat-shop {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.stat-buy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.stat-buy-name {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 700;
+}
+.stat-buy-name b {
+  color: #f4d48c;
+  font-variant-numeric: tabular-nums;
+}
+.stat-buy-name small {
+  font-weight: 400;
+  opacity: 0.6;
+}
+.stat-buy button {
+  display: grid;
+  gap: 0;
+  min-width: 64px;
+  padding: 4px 8px;
+  line-height: 1.2;
+  text-align: center;
+}
+.stat-buy button small {
+  font-size: 11px;
+  opacity: 0.8;
+}

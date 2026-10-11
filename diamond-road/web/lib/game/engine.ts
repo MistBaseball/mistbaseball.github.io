@@ -862,19 +862,29 @@ export const trainMultiplier = (difficulty: Difficulty) =>
 /** Most a training session can raise a stat (a perfect minigame) on this stage and difficulty. */
 export const trainMax = (stage: Stage, difficulty: Difficulty) =>
   2 * (STAGES[stage] ?? STAGES.high).trainGain * trainMultiplier(difficulty);
-/** Experience (구종 상점). Raised ×1.5 in v11.3, then about ×0.7 in v12.4 (pitches came
- *  too fast). */
+/** Experience (구종 상점 and 능력치 구매). Raised ×1.5 in v11.3, about ×0.7 in v12.4, and
+ *  trimmed again in v12.6 now that XP also buys stats: a day (a match plus the training) pays
+ *  about 130 XP, so two days buy the dearest pitch (260 XP). */
 export const XP = {
-  strikeout: 6,
+  strikeout: 5,
   out: 2,
   walk: 2,
-  hit: [0, 7, 10, 14, 21] as const,
-  run: 4,
-  complete: 40,
-  win: 30,
-  draw: 12,
-  training: 8,
-  rest: 3,
+  hit: [0, 6, 8, 12, 18] as const,
+  run: 3,
+  complete: 35,
+  win: 25,
+  draw: 10,
+  training: 4,
+  rest: 2,
+};
+/** XP price of the next point of a stat: grows with the stat. */
+export const statBuyCost = (value: number) => 24 + Math.floor(Math.max(0, value) * 0.4);
+/** XP for `n` points from `value` up (null if the cap is in the way). */
+export const statBuyTotal = (value: number, n: number, cap: number) => {
+  if (value + n > cap) return null;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += statBuyCost(value + i);
+  return sum;
 };
 /** Actions (training, rest, study) available each day before the day's match. */
 export const DAY_ACTIONS = 5;
@@ -2615,6 +2625,10 @@ export class BaseballEngine {
       this.state.career = before;
       return false;
     }
+    // The loaded player plays on his own difficulty: this browser's setting (maybe "normal"
+    // from a career made just before loading) must not pull his hall-of-fame board down.
+    const board = this.state.career.minDifficulty;
+    if (isDifficulty(board)) this.setDifficulty(board);
     this.clearMatchSave();
     this.start("match", this.state.maxInnings);
     this.persist();
@@ -5078,11 +5092,7 @@ export class BaseballEngine {
           };
       }
       // (Not a fielder still on the ground after a missed dive: he gets up first.)
-      if (
-        cut &&
-        cut.who !== l.fielder &&
-        !(cut.who === l.diver && l.elapsed < (l.downUntil ?? 0))
-      )
+      if (cut && cut.who !== l.fielder && !(cut.who === l.diver && l.elapsed < (l.downUntil ?? 0)))
         this.moveFielder(l.defenders[cut.who], cut.spot, dt);
     }
     if (l.resultBases === 4) {
@@ -6294,6 +6304,47 @@ export class BaseballEngine {
       grade,
       gain: o.gain,
       message: `${o.name} ${o.stat ? `${grade} · ${statLabel(o.stat)} +${o.gain}` : "완료"} · 남은 행동력 ${c.actions}/${DAY_ACTIONS}`,
+    };
+  }
+  /**
+   * Buys `n` points of a stat with XP (no action needed, only between matches). The price of
+   * each point is `statBuyCost` of the stat at that moment; the team grows with the player
+   * exactly as in training.
+   */
+  buyStat(key: StatKey, n = 1) {
+    if (this.matchActive)
+      return {
+        ok: false,
+        message: "경기 중에는 능력치를 살 수 없습니다. 경기를 마친 뒤에 하세요.",
+      };
+    const c = this.state.career;
+    if (!(key in c.stats)) return { ok: false, message: "알 수 없는 능력치" };
+    const pts = Math.max(1, Math.floor(Number.isFinite(n) ? n : 1)),
+      cap = statCapOf(c),
+      before = c.stats[key];
+    if (before >= cap) return { ok: false, message: "이미 최고 능력치입니다." };
+    const cost = statBuyTotal(before, pts, cap);
+    if (cost === null)
+      return { ok: false, message: `${statLabel(key)} 상한(${cap})을 넘을 수 없습니다.` };
+    if (c.xp < cost)
+      return {
+        ok: false,
+        message: `경험치가 ${cost - c.xp} XP 부족합니다. 경기와 훈련으로 모으세요.`,
+      };
+    c.xp -= cost;
+    c.stats[key] = before + pts;
+    c.teamBoost = (c.teamBoost ?? 0) + (pts / Object.keys(c.stats).length) * TEAM_GROWTH;
+    c.history = [`${c.day}일차 · ${statLabel(key)} +${pts} 구매 (−${cost} XP)`, ...c.history].slice(
+      0,
+      12,
+    );
+    this.checkHiddenPitches();
+    this.persist();
+    this.emit();
+    return {
+      ok: true,
+      cost,
+      message: `${statLabel(key)} +${pts} (${before} → ${before + pts}) · −${cost} XP`,
     };
   }
   /** Starting roulette: grants one random pitch once per career. Returns the pitch or null. */

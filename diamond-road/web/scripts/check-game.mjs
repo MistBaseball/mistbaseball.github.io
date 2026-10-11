@@ -35,6 +35,8 @@ import {
   LEGEND_PITCHES,
   flutterOffset,
   statCapOf,
+  statBuyCost,
+  statBuyTotal,
   visualFlightTime,
   fieldSkill,
   teamRatings,
@@ -3353,6 +3355,76 @@ check("Difficulty chosen at creation is the career's hall-of-fame board from the
   g.setDifficulty("easy");
   assert.equal(g.state.career.minDifficulty, "easy");
   g.setDifficulty("normal");
+});
+check("Loading an account by code keeps its own difficulty (a new career made before loading cannot pull the board down)", () => {
+  const store = new Map(),
+    had = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  try {
+    const saved = newCareer();
+    saved.created = true;
+    saved.name = "원래계정";
+    saved.team = "triples";
+    saved.minDifficulty = "impossible";
+    const g = new BaseballEngine(newCareer(), seed(8));
+    g.setDifficulty("normal"); // what the throwaway career at the start screen chose
+    assert(g.importCareer(JSON.parse(JSON.stringify(saved))));
+    assert.equal(g.state.difficulty, "impossible", "the loaded player's difficulty is adopted");
+    assert.equal(store.get("diamond-road-difficulty") ?? "impossible", "impossible");
+    g.start("match");
+    g.state.pitchCount[1] = 1;
+    g.setDifficulty("impossible");
+    assert.equal(g.state.career.minDifficulty, "impossible", "the board stays on impossible");
+    // A career that never recorded a board keeps this browser's setting.
+    const old = newCareer();
+    old.created = true;
+    old.name = "옛계정";
+    old.team = "triples";
+    const h = new BaseballEngine(newCareer(), seed(8));
+    h.setDifficulty("hard");
+    assert(h.importCareer(JSON.parse(JSON.stringify(old))));
+    assert.equal(h.state.difficulty, "hard");
+  } finally {
+    globalThis.localStorage = had;
+  }
+});
+check("XP buys stats: price grows with the stat, caps and match lock hold, the dearest pitch takes about two days of XP", () => {
+  assert.equal(statBuyCost(45), 42);
+  assert(statBuyCost(80) > statBuyCost(45) && statBuyCost(200) > statBuyCost(100));
+  assert.equal(statBuyTotal(45, 2, 100), statBuyCost(45) + statBuyCost(46));
+  assert.equal(statBuyTotal(99, 2, 100), null, "past the cap there is no price");
+  const c = newCareer();
+  c.created = true;
+  c.team = "triples";
+  const g = new BaseballEngine(c, seed(9));
+  const before = c.stats.contact,
+    cost = statBuyTotal(before, 3, statCapOf(c));
+  assert(!g.buyStat("contact", 3).ok, "not enough XP");
+  c.xp = cost + 5;
+  const boost = c.teamBoost ?? 0;
+  assert(g.buyStat("contact", 3).ok);
+  assert.equal(c.stats.contact, before + 3);
+  assert.equal(c.xp, 5, "the XP is spent");
+  assert((c.teamBoost ?? 0) > boost, "the team grows with the player");
+  assert(!g.buyStat("nonsense", 1).ok);
+  // The cap of the stage stops it (and nothing is charged).
+  c.stats.power = statCapOf(c);
+  c.xp = 9999;
+  assert(!g.buyStat("power", 1).ok);
+  assert.equal(c.xp, 9999);
+  // Not during a match.
+  g.start("match");
+  g.state.pitchCount[1] = 1;
+  assert(!g.buyStat("speed", 1).ok, "no buying in the middle of a match");
+  // Pacing: a day (a typical match plus five trainings) pays about half the dearest pitch.
+  const dearest = Math.max(...PITCHES.map((p) => p.cost)),
+    typicalMatch = XP.complete + XP.win * 0.5 + 60,
+    day = typicalMatch + 5 * XP.training;
+  assert(dearest / day > 1.7 && dearest / day < 2.6, `two days for ${dearest} XP (day ${day})`);
 });
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();

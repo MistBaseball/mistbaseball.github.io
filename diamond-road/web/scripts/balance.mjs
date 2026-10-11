@@ -64,7 +64,17 @@ if (process.env.DIFF) {
 }
 let real = 0;
 const milestones = {};
-const stats = { matches: 0, wins: 0, k: 0, hits: 0, runsAllowed: 0, matchSec: [] };
+const stats = {
+  matches: 0,
+  wins: 0,
+  k: 0,
+  hits: 0,
+  runsAllowed: 0,
+  matchSec: [],
+  xp: 0,
+  xpTrain: 0,
+  trainN: 0,
+};
 // Per tier: wins, draws, losses, runs for/against, our hits, their hits.
 const tiers = {};
 const outcomes = {};
@@ -87,11 +97,21 @@ function morning() {
     if (!ok) g.train("rest");
     real += ok ? T.minigame : T.rest;
   }
+  // STATBUY=first: XP goes into the weakest stat first (upper bound); =left: only what the
+  // pitch shop leaves over; unset: stats are never bought.
+  const buyStats = () => {
+    for (let guard = 0; guard < 400; guard++) {
+      const keys = Object.keys(car.stats).sort((a, b) => car.stats[a] - car.stats[b]);
+      if (!keys.some((k) => g.buyStat(k, 1).ok)) break;
+    }
+  };
+  if (process.env.STATBUY === "first") buyStats();
   // Shop: buy the cheapest pitch we can afford.
   const shop = PITCHES.filter((p) => p.cost && !car.pitches.includes(p.id)).sort(
     (a, b) => a.cost - b.cost,
   );
   for (const p of shop) if (car.xp >= p.cost) g.buyPitch(p.id);
+  if (process.env.STATBUY === "left") buyStats();
 }
 
 function match() {
@@ -160,6 +180,7 @@ function match() {
   agg.k += g.matchStrikeouts ?? 0;
   agg.e += st.errors[0] + st.errors[1];
   stats.matches++;
+  stats.xp += st.lastXpGain ?? 0;
   if (st.score[1] > st.score[0]) stats.wins++;
   stats.k += g.matchStrikeouts ?? 0;
   stats.hits += st.hits[1];
@@ -210,6 +231,7 @@ console.log(
     matchMin: +(ms.reduce((a, b) => a + b, 0) / ms.length / 60).toFixed(2),
     perMatch: {
       win: +(stats.wins / stats.matches).toFixed(2),
+      xpMatch: +(stats.xp / stats.matches).toFixed(0),
       k: +(stats.k / stats.matches).toFixed(1),
       hits: +(stats.hits / stats.matches).toFixed(1),
       runsAllowed: +(stats.runsAllowed / stats.matches).toFixed(1),
