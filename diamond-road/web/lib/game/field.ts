@@ -1751,7 +1751,8 @@ export class BaseballField {
       f = s.flight,
       blue = s.phase === "flight" && !!f && f.speed >= 180 && this.ball.visible;
     this.fire.forEach((m, i) => {
-      const at = i === 0 ? this.ball.position : this.trailPositions[this.trailPositions.length - 1 - i * 3];
+      const at =
+        i === 0 ? this.ball.position : this.trailPositions[this.trailPositions.length - 1 - i * 3];
       m.visible = blue && !!at;
       if (!m.visible || !at) return;
       m.position.copy(at);
@@ -2588,9 +2589,7 @@ export class BaseballField {
     const aim = s.flight && !this.engine.batting ? s.flight.aim : s.aim;
     this.target.position.set(aim.x, aim.y, 0.03);
     // When batting, the aim ring shows how far the bat may miss and still connect.
-    this.target.scale.setScalar(
-      this.engine.batting ? batReach(formOf(this.engine.batter).contact, s.swingStyle) / 0.09 : 1,
-    );
+    this.target.scale.setScalar(this.engine.batting ? this.engine.batReachNow / 0.09 : 1);
     const hint = this.engine.batting && s.flight ? s.flight.hint : null;
     this.hint.visible =
       !!hint && (s.phase === "windup" || s.phase === "flight") && cam !== "top" && cam !== "ball";

@@ -86,10 +86,10 @@ export function AiLab({ onClose }: { onClose: () => void }) {
     const pool = new Pool(workers),
       sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const run = async () => {
-      const init = await pool.ask<{ updates: number; plays: number; policies: PoliciesJson }>(
-        0,
-        { kind: "init", checkpoint: restart ? null : loadCheckpoint() },
-      );
+      const init = await pool.ask<{ updates: number; plays: number; policies: PoliciesJson }>(0, {
+        kind: "init",
+        checkpoint: restart ? null : loadCheckpoint(),
+      });
       policies.current = init.policies;
       let updates = init.updates;
       setProgress({ updates, plays: init.plays });
@@ -264,7 +264,9 @@ export function AiLab({ onClose }: { onClose: () => void }) {
         승률: 같은 상황을 기존 AI끼리 했을 때와 비교해 학습한 주자가 더 멀리 가면 주자 승, 학습한
         수비가 더 잘 막으면 수비 승 ({EVAL_EVERY}번마다 {EVAL_PLAYS}상황으로 측정) · 기존 AI 대비
         보상: 주자 {gain(summary?.vsHand.runner)}, 수비 {gain(summary?.vsHand.fielder)}
-        {round ? ` · 플레이당 아웃 ${round.outsPerPlay.toFixed(2)} · 득점 ${round.runsPerPlay.toFixed(2)}` : ""}
+        {round
+          ? ` · 플레이당 아웃 ${round.outsPerPlay.toFixed(2)} · 득점 ${round.runsPerPlay.toFixed(2)}`
+          : ""}
         {` · 화면 ${SPEED}배속 · 작업자 ${workers}개`}
       </p>
       <div className="ai-lab-field" ref={host} />

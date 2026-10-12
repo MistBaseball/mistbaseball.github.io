@@ -74,6 +74,7 @@ const stats = {
   xp: 0,
   xpTrain: 0,
   trainN: 0,
+  form: 0,
 };
 // Per tier: wins, draws, losses, runs for/against, our hits, their hits.
 const tiers = {};
@@ -180,6 +181,7 @@ function match() {
   agg.k += g.matchStrikeouts ?? 0;
   agg.e += st.errors[0] + st.errors[1];
   stats.matches++;
+  stats.form += g.state.career.form;
   stats.xp += st.lastXpGain ?? 0;
   if (st.score[1] > st.score[0]) stats.wins++;
   stats.k += g.matchStrikeouts ?? 0;
@@ -232,6 +234,7 @@ console.log(
     perMatch: {
       win: +(stats.wins / stats.matches).toFixed(2),
       xpMatch: +(stats.xp / stats.matches).toFixed(0),
+      form: +(stats.form / stats.matches).toFixed(0),
       k: +(stats.k / stats.matches).toFixed(1),
       hits: +(stats.hits / stats.matches).toFixed(1),
       runsAllowed: +(stats.runsAllowed / stats.matches).toFixed(1),

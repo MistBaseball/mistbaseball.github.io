@@ -36,6 +36,7 @@ import {
   flutterOffset,
   statCapOf,
   statBuyCost,
+  controlSpread,
   statBuyTotal,
   visualFlightTime,
   fieldSkill,
@@ -826,6 +827,7 @@ check("Creation spends exactly the stat budget; minigame quality sets the traini
   ]) {
     const before = g.state.career.stats.contact;
     g.state.career.energy = 100;
+    g.state.career.form = 50; // 컨디션 50: training ×1
     g.state.career.actions = DAY_ACTIONS;
     const r = g.train("batting", q);
     assert(r.ok);
@@ -839,6 +841,7 @@ check("Creation spends exactly the stat budget; minigame quality sets the traini
     const before = e.state.career.stats.control;
     for (let i = 0; i < n; i++) {
       e.state.career.energy = 100;
+      e.state.career.form = 50;
       e.state.career.actions = DAY_ACTIONS;
       e.state.career.stats.control = Math.min(e.state.career.stats.control, 70);
       const was = e.state.career.stats.control;
@@ -853,12 +856,57 @@ check("Creation spends exactly the stat budget; minigame quality sets the traini
   let sum = 0;
   for (let i = 0; i < 10; i++) {
     normal.state.career.energy = 100;
+    normal.state.career.form = 50;
     normal.state.career.actions = DAY_ACTIONS;
     const was = normal.state.career.stats.control;
     normal.train("bullpen", 0.6);
     sum += normal.state.career.stats.control - was;
   }
   assert.equal(sum, 20, "ten 'good' sessions = 20 points");
+});
+check("컨디션 is batting and growth, 체력 is pitching: window, bat area, speed, training, after a match", () => {
+  const c = newCareer();
+  c.created = true;
+  c.team = "triples";
+  const g = new BaseballEngine(c, seed(40));
+  g.start("batting");
+  c.form = 60;
+  const w60 = g.swingWindowNow,
+    r60 = g.batReachNow;
+  c.form = 100;
+  assert(Math.abs(g.swingWindowNow / w60 - 1.1) < 1e-9 && Math.abs(g.batReachNow / r60 - 1.1) < 1e-9);
+  c.form = 0;
+  assert(Math.abs(g.swingWindowNow / w60 - 0.85) < 1e-9);
+  // Pitching no longer depends on it.
+  assert.equal(controlSpread(70, 80, 80, 0), controlSpread(70, 80, 80, 100));
+  // Running: a good day, a quicker step.
+  c.form = 100;
+  const fast = g.member(0).speed;
+  c.form = 20;
+  assert.equal(fast - g.member(0).speed, 12);
+  // Training: ×0.8 … ×1.2.
+  const gain = (form) => {
+    const e = new BaseballEngine(JSON.parse(JSON.stringify(c)), seed(41));
+    let sum = 0;
+    for (let i = 0; i < 10; i++) {
+      e.state.career.form = form;
+      e.state.career.energy = 100;
+      e.state.career.actions = DAY_ACTIONS;
+      const was = e.state.career.stats.control;
+      e.train("bullpen", 0.6);
+      sum += e.state.career.stats.control - was;
+    }
+    return sum;
+  };
+  assert.deepEqual([gain(0), gain(50), gain(100)], [16, 20, 24]);
+  // After a match: hits and a win lift it.
+  const m = new BaseballEngine(JSON.parse(JSON.stringify(c)), seed(42));
+  m.state.career.form = 50;
+  m.start("match");
+  Object.assign(m.state, { inning: 3, half: "bottom", outs: 3, score: [1, 4], hits: [3, 8], phase: "result" });
+  m.next();
+  assert.equal(m.state.phase, "finished");
+  assert.equal(m.state.career.form, Math.round(50 + Math.min(10, RULES.formMatch + 8 * RULES.formHit + RULES.formWin)));
 });
 check("Dream club scout watches season matches; reaching 100 brings the contract", () => {
   const g = new BaseballEngine();
@@ -1990,6 +2038,7 @@ check(
       for (const k of kinds) {
         g.state.career.actions = 5;
         g.state.career.energy = 100;
+        g.state.career.form = 50; // 컨디션 50: training ×1
         assert(g.train(k, 1).ok, k);
       }
       const rise = avg(g.state.career) - start;

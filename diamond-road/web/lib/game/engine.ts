@@ -441,6 +441,13 @@ export const SWING_GOOD = 0.045;
  * Change numbers here; the rules read them, nothing else hard-codes them.
  */
 export const RULES = {
+  /** 컨디션 per training session, and after a match: base + per team hit + a win (v13.4). */
+  // Tuned so a player who mostly trains sits near 55–60 (balance bot, normal): resting and
+  // study bring it up, a good match helps.
+  formTraining: 4,
+  formMatch: -4,
+  formHit: 1,
+  formWin: 4,
   /** Versus: seconds the batter waits for the rival pitcher before an AI pitch goes. */
   versusPitchWait: 25,
   /** Wild pitch chance per pitch with runners on: base + fatigue * ((100 - energy) / 100)^2. */
@@ -1390,15 +1397,24 @@ export const flutterOffset = (flutter: number, u: number, seed: number) => {
  * Control error (m, one standard deviation) of the player's pitches. Lower stamina (energy),
  * higher effort and poor form all widen it; the control stat narrows it.
  */
-export const controlSpread = (control: number, energy: number, effort: number, form: number) =>
+/**
+ * 컨디션 (form) is the day's feel at the plate (v13.4): timing window and bat area ×0.85 at 0,
+ * ×1 at 60, ×1.1 at 100. Pitching is 체력's business only.
+ */
+export const formBat = (form: number) => 0.85 + clamp(form, 0, 100) * 0.0025;
+/** 컨디션 and training: the stat gained ×0.8 at 0, ×1 at 50, ×1.2 at 100. */
+export const formTrain = (form: number) => 0.8 + clamp(form, 0, 100) * 0.004;
+/** 컨디션 and running: the player's speed rating moves by up to ±6 (60 = even). */
+export const formRun = (form: number) => Math.round((clamp(form, 0, 100) - 60) * 0.15);
+// (`form` is kept in the signature for the callers; since v13.4 it no longer changes control.)
+export const controlSpread = (control: number, energy: number, effort: number, _form = 100) =>
   Math.max(
     0.008,
-    (0.022 +
+    0.022 +
       (100 - Math.min(control, 100)) * 0.0019 -
       Math.max(0, control - 100) * 0.00012 +
       (100 - energy) * 0.0016 +
-      (effort - 70) * 0.001) *
-      (1 + (100 - form) * 0.003),
+      (effort - 70) * 0.001,
   );
 export type RunnerTrack = {
   id: number;
@@ -2502,7 +2518,8 @@ export class BaseballEngine {
         hand: "R",
         contact: this.playerStats.contact,
         power: this.playerStats.power,
-        speed: this.playerStats.speed,
+        // 컨디션: a good day, a quicker step.
+        speed: this.playerStats.speed + formRun(c.form),
         pro: false,
       };
     // Teammates grow with the player (TEAM_GROWTH of his average gain), up to the stage cap
@@ -2514,6 +2531,16 @@ export class BaseballEngine {
     return boost
       ? { ...p, contact: up(p.contact), power: up(p.power), eye: up(p.eye), speed: up(p.speed) }
       : p;
+  }
+  /** Timing window for our swings now (difficulty, stage, swing style, 컨디션). */
+  get swingWindowNow() {
+    const s = this.state;
+    return swingWindow(s.difficulty, s.career.stage, s.swingStyle) * formBat(s.career.form);
+  }
+  /** How far our bat may miss the ball now (the batter's contact, swing style, 컨디션). */
+  get batReachNow() {
+    const s = this.state;
+    return batReach(formOf(this.batter).contact, s.swingStyle) * formBat(s.career.form);
   }
   /** Our at-bat in slot i: the same player who then runs the bases. */
   private ourBatter(i: number): Player {
@@ -3092,7 +3119,8 @@ export class BaseballEngine {
         : auto
           ? Math.max(0, s.pitchCount[1] - 25) * 0.18
           : 100 - s.energy;
-    const formPenalty = vp ? (100 - vp.form) * 0.02 : machine ? 0 : (100 - s.career.form) * 0.02;
+    // (컨디션 no longer slows the pitch since v13.4: 체력 is the pitcher's gauge.)
+    const formPenalty = 0;
     const speed = clamp(
       (machine
         ? stage.aiVelocity +
@@ -3451,8 +3479,8 @@ export class BaseballEngine {
         const timing = f.swingTime / f.visualDuration - SWING_SWEET,
           spatial = Math.hypot(f.batAim.x - f.target.x, f.batAim.y - f.target.y),
           style = SWING_STYLES[s.swingStyle],
-          window = swingWindow(s.difficulty, s.career.stage, s.swingStyle),
-          reach = batReach(formOf(this.batter).contact, s.swingStyle),
+          window = this.swingWindowNow,
+          reach = this.batReachNow,
           contact = Math.abs(timing) < window && spatial < reach,
           // Contact swing: a near miss is fouled off, so the batter survives the pitch.
           cut =
@@ -3714,10 +3742,7 @@ export class BaseballEngine {
       bunt = player && s.swingStyle === "bunt";
     if (player) {
       const style = SWING_STYLES[s.swingStyle];
-      q =
-        clamp(q - (100 - s.career.form) * 0.001, 0, 1) *
-          (style.spread[0] + this.rng() * style.spread[1]) +
-        style.boost;
+      q = clamp(q, 0, 1) * (style.spread[0] + this.rng() * style.spread[1]) + style.boost;
       q = clamp(
         q + this.balance.batBoost + (this.role === "batter" ? RULES.batterRoleBoost : 0),
         0,
@@ -6348,7 +6373,20 @@ export class BaseballEngine {
       c.energy = clamp(Math.round(s.energy) + 25, 0, 100);
       c.day++;
       c.actions = DAY_ACTIONS;
-      c.form = clamp(c.form - 4, 0, 100);
+      // 컨디션 follows the game: hits and a win lift it, a quiet loss lowers it.
+      const formWon = !ejected && s.score[1] > s.score[0];
+      c.form = clamp(
+        Math.round(
+          c.form +
+            clamp(
+              RULES.formMatch + s.hits[1] * RULES.formHit + (formWon ? RULES.formWin : 0),
+              -8,
+              10,
+            ),
+        ),
+        0,
+        100,
+      );
       // Scout gauge: every reason as its own line; caps and the pro scale are lines too, so the
       // recap always adds up to the real gain.
       const won = !ejected && s.score[1] > s.score[0],
@@ -6824,7 +6862,9 @@ export class BaseballEngine {
       // ×2 (×3 on easy) since v12.4. Stats stay whole numbers: the fraction is carried over
       // to the next session (`trainCarry`), so on average nothing is lost.
       const base = (q >= 0.85 ? 2 : q >= 0.4 ? 1 : 0) * this.stageRules.trainGain,
-        raw = base * trainMultiplier(s.difficulty) + (base > 0 ? (c.trainCarry ?? 0) : 0);
+        raw =
+          base * trainMultiplier(s.difficulty) * formTrain(c.form) +
+          (base > 0 ? (c.trainCarry ?? 0) : 0);
       o.gain = Math.floor(raw + 1e-9);
       if (base > 0) c.trainCarry = raw - o.gain;
     } else if (kind === "study") o.gain = Math.round(2 + q * 4);
@@ -6839,7 +6879,7 @@ export class BaseballEngine {
         n = Object.keys(c.stats).length;
       c.teamBoost = (c.teamBoost ?? 0) + (rise / n) * TEAM_GROWTH;
     } else c.form = clamp(c.form + o.gain, 0, 100);
-    if (o.stat) c.form = clamp(c.form - 2, 0, 100);
+    if (o.stat) c.form = clamp(c.form - RULES.formTraining, 0, 100);
     c.scout = clamp(c.scout + (o.stat ? 0.5 : 0), 0, 100);
     c.history = [
       `${c.day}일차 · ${o.name}${o.stat ? ` (${grade}) +${o.gain}` : ""}`,

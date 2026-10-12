@@ -84,6 +84,7 @@ import {
   matchTeams,
   STAGES,
   trainMax,
+  formBat,
   statCapOf,
   statBuyTotal,
   LEGEND_PITCHES,
@@ -574,8 +575,8 @@ function AimPad({ engine, s }: { engine: BaseballEngine; s: GameState }) {
         <g transform={`translate(${toX(aim.x)} ${toY(aim.y)})`} stroke="#f1c771" strokeWidth="1.6">
           {batting && (
             <ellipse
-              rx={(batReach(formOf(engine.batter).contact, s.swingStyle) / 1.4) * 280}
-              ry={(batReach(formOf(engine.batter).contact, s.swingStyle) / 1.7) * 240}
+              rx={(engine.batReachNow / 1.4) * 280}
+              ry={(engine.batReachNow / 1.7) * 240}
               fill="#f1c771"
               fillOpacity=".06"
               strokeOpacity=".5"
@@ -619,7 +620,7 @@ function AimPad({ engine, s }: { engine: BaseballEngine; s: GameState }) {
 function TimingBar({ s, className }: { s: GameState; className: string }) {
   const f = s.flight,
     progress = f ? clamp(f.elapsed / f.visualDuration, 0, 1) : 0,
-    w = swingWindow(s.difficulty, s.career.stage, s.swingStyle),
+    w = swingWindow(s.difficulty, s.career.stage, s.swingStyle) * formBat(s.career.form),
     pct = (v: number) => `${clamp(v, 0, 1) * 100}%`;
   return (
     <div className={className} aria-label={`투구 진행 ${Math.round(progress * 100)}%`}>
@@ -1281,8 +1282,8 @@ function LifeView({
                 <dt>{t.id === "rest" ? "현재 체력" : "컨디션"}</dt>
                 <dd>
                   {t.id === "rest"
-                    ? `${Math.round(c.energy)} / 100 · 낮으면 구속·제구가 떨어지고 폭투가 늘어요`
-                    : `${c.form} / 100 · 낮으면 구속·제구·타구 질이 떨어져요`}
+                    ? `${Math.round(c.energy)} / 100 · 투구용: 낮으면 구속·제구가 떨어지고 폭투가 늘어요`
+                    : `${c.form} / 100 · 높을수록 타이밍 창·배트 범위·주력·훈련 효과가 커져요`}
                 </dd>
               </dl>
             )}
@@ -1290,7 +1291,10 @@ function LifeView({
               <span className="mg-tag">미니게임 · {TRAINING_GAMES[t.id].title}</span>
             )}
             <div>
-              <b>{t.gain.replace("+0~2", `+0~${trainMax(c.stage, s.difficulty)}`)}</b>
+              <b>
+                {t.gain.replace("+0~2", `+0~${trainMax(c.stage, s.difficulty)}`)}
+                {t.stat ? ` · 컨디션 −${RULES.formTraining}` : ""}
+              </b>
               <span>
                 {t.cost > 0 ? `체력 −${t.cost}` : "체력 회복"}
                 <ArrowUpRight size={15} />
