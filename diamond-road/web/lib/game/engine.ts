@@ -6703,6 +6703,14 @@ export class BaseballEngine {
     const st = this.state;
     st.half = "top";
     st.resultTone = flipTone(st.resultTone) as string;
+    // Between pitches the batter's own lines ("다음 공을 기다리세요", or his steal sign!) are
+    // not for the pitcher: he sees his own.
+    if (st.phase === "ready") {
+      st.message = v.sent ? "투구!" : "투수 차례";
+      st.detail = v.sent
+        ? "타자 화면으로 날아가는 중"
+        : "구종을 고르고 목표 지점을 클릭하면 상대 화면에서 공이 날아갑니다";
+    }
     if (st.phase !== "ready") v.sent = false;
     if (lag > 0 && st.phase === "windup") {
       st.timer -= lag;

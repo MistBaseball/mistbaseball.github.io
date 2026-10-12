@@ -17,6 +17,14 @@ type Patch = { version: string; date: string; title: string; items: string[] };
 
 export const PATCHES: Patch[] = [
   {
+    version: "v13.6",
+    date: "10/12",
+    title: "멀티 도루 사인 숨기기",
+    items: [
+      "멀티에서 타자가 낸 '도루 사인!'이 투수 화면에도 보이던 문제를 고쳤어요. 투수 화면에는 자기 안내(투수 차례)만 나와요.",
+    ],
+  },
+  {
     version: "v13.5",
     date: "10/12",
     title: "단계별 난이도 다시 맞추기",

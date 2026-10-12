@@ -3836,6 +3836,11 @@ check("Versus: two engines play a whole match over a laggy network (the batter's
     const rep = m.state.replay;
     m.applyVersusSnapshot(wire());
     assert.equal(m.state.replay, rep, "same replay, same object");
+    // The batter's steal sign never shows on the pitcher's screen.
+    a.state.phase = "ready";
+    a.state.message = "도루 사인!";
+    m.applyVersusSnapshot(wire());
+    assert.equal(m.state.message, "투수 차례");
   }
   // Blending snapshots: positions move in between, the rest is the newer one.
   assert.deepEqual(blend({ ball: { x: 0, y: 2 }, outs: 1 }, { ball: { x: 10, y: 4 }, outs: 2 }, 0.5), {
