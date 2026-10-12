@@ -898,7 +898,7 @@ export const statBuyTotal = (value: number, n: number, cap: number) => {
   return sum;
 };
 /** Actions (training, rest, study) available each day before the day's match. */
-export const DAY_ACTIONS = 5;
+export const DAY_ACTIONS = 7;
 export type StatKey = keyof Career["stats"];
 export const STAT_NAMES: Record<StatKey, string> = {
   velocity: "구속",
@@ -2053,6 +2053,10 @@ export const AI_CTX = 10,
 export type TeamSheet = {
   team: string;
   player: string;
+  /** His league (the stat cap of a versus match is the lower league's). */
+  tier?: Tier;
+  /** Lineup slot the player himself bats in. */
+  slot?: number;
   /** Hall-of-fame id (for the win/loss board), if he has one. */
   playerId?: string;
   stats: Career["stats"];
@@ -2088,7 +2092,18 @@ export type VersusState = {
   saved: string;
   onThrow: ((p: RemotePitch) => void) | null;
   result: { mine: number; theirs: number; reason?: string } | null;
+  /** Stat cap for both players: the top of the lower of the two leagues. */
+  cap: number;
+  /** This browser's difficulty before the match (versus is always "normal"). */
+  difficulty: Difficulty;
 };
+/** Top stat of each league for versus matching (high school 100, pros 200, majors 250). */
+export const versusCap = (t: Tier | undefined) =>
+  t === "mlb"
+    ? LIMITLESS_CAP
+    : t === "farm" || t === "first"
+      ? STAGES.pro.statCap
+      : STAGES.high.statCap;
 /** What the batter's browser sends to the pitcher's (its own side's view). */
 export const VERSUS_FIELDS = [
   "phase",
@@ -3004,7 +3019,13 @@ export class BaseballEngine {
       stats = this.playerStats,
       stage = this.stageRules,
       // Versus: the rival's pitch as he chose it on his screen, with his own numbers.
-      vp = ai && this.versus ? this.versus.pitch : null,
+      vp0 = ai && this.versus ? this.versus.pitch : null,
+      vp = vp0 && {
+        ...vp0,
+        velocity: Math.min(vp0.velocity, this.versus!.cap),
+        control: Math.min(vp0.control, this.versus!.cap),
+        movement: Math.min(vp0.movement, this.versus!.cap),
+      },
       machine = (ai || auto) && !vp,
       plan = auto ? this.autoPitchPlan() : null,
       pitch = plan
@@ -6390,6 +6411,8 @@ export class BaseballEngine {
       team: matchTeams(c)[1],
       player: c.name || "선수",
       playerId: c.hofId,
+      tier: tierOf(c),
+      slot: this.battingOrder.indexOf(0),
       stats: { ...c.stats },
       pitches: [...c.pitches],
       lineup: Array.from({ length: 9 }, (_, i) => {
@@ -6408,15 +6431,28 @@ export class BaseballEngine {
     innings: number;
     onThrow: (p: RemotePitch) => void;
   }) {
-    const saved = JSON.stringify(this.state.career);
+    const saved = JSON.stringify(this.state.career),
+      difficulty = this.versus?.difficulty ?? this.state.difficulty,
+      // League matching: both play with the stat cap of the lower league.
+      cap = Math.min(versusCap(tierOf(this.state.career)), versusCap(o.sheet.tier));
     this.versus = null;
     this.start("match", o.innings);
     const s = this.state;
+    // Versus is always on normal (not saved, so the hall-of-fame board is not touched).
+    s.difficulty = "normal";
     s.weather = "clear";
     s.rainOn = false;
     s.energy = 100;
     s.pineTar = false;
-    const lineup = o.sheet.lineup.slice(0, 9);
+    const slot = o.sheet.slot ?? -1,
+      lim = (v: number) => Math.min(v, cap),
+      lineup = o.sheet.lineup
+        .slice(0, 9)
+        .map((p, i) =>
+          i === slot
+            ? { ...p, contact: lim(p.contact), power: lim(p.power), speed: lim(p.speed) }
+            : p,
+        );
     this.versus = {
       home: o.home,
       mirror: true,
@@ -6433,6 +6469,8 @@ export class BaseballEngine {
       saved,
       onThrow: o.onThrow,
       result: null,
+      cap,
+      difficulty,
     };
     s.log = [`멀티 대결 · ${this.teams[1]} vs ${this.teams[0]}`];
     this.emit();
@@ -6585,6 +6623,7 @@ export class BaseballEngine {
     } catch {
       /* keep the one in memory */
     }
+    this.state.difficulty = v.difficulty;
     this.start("match");
   }
   resetPitch() {
@@ -6937,6 +6976,13 @@ export class BaseballEngine {
             movement: st0.movement + PINE_TAR_BOOST,
           }
         : st0;
+    // Versus: capped at the lower league's top.
+    if (this.versus) {
+      const cap = this.versus.cap;
+      return Object.fromEntries(
+        Object.entries(st).map(([k, v]) => [k, Math.min(v, cap)]),
+      ) as Career["stats"];
+    }
     if (!this.limitActive) return st;
     return Object.fromEntries(Object.keys(st).map((k) => [k, LIMIT_BREAK])) as Career["stats"];
   }

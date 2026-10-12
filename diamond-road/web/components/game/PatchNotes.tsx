@@ -17,6 +17,16 @@ type Patch = { version: string; date: string; title: string; items: string[] };
 
 export const PATCHES: Patch[] = [
   {
+    version: "v13.1",
+    date: "10/12",
+    title: "멀티 리그 맞추기 · 행동력 7",
+    items: [
+      "멀티 대결은 난이도 보통으로 고정되고, 내 명예의 전당 난이도에는 영향을 주지 않아요.",
+      "리그 맞추기: 리그가 다르면 두 사람 모두 낮은 리그의 최고 능력치까지만 써요(고교 100 · 프로 200 · MLB 250). 예: 프로 선수가 고교 선수와 붙으면 100까지만.",
+      "하루 행동력이 5에서 7로 늘었어요.",
+    ],
+  },
+  {
     version: "v13.0",
     date: "10/12",
     title: "멀티 대결 · 라이벌 리그",

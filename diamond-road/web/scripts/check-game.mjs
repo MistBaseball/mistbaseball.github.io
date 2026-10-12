@@ -3470,10 +3470,10 @@ check("XP buys stats: price grows with the stat, caps and match lock hold, the d
   g.start("match");
   g.state.pitchCount[1] = 1;
   assert(!g.buyStat("speed", 1).ok, "no buying in the middle of a match");
-  // Pacing: a day (a typical match plus five trainings) pays about half the dearest pitch.
+  // Pacing: a day (a typical match plus a day of trainings) pays about half the dearest pitch.
   const dearest = Math.max(...PITCHES.map((p) => p.cost)),
     typicalMatch = XP.complete + XP.win * 0.5 + 60,
-    day = typicalMatch + 5 * XP.training;
+    day = typicalMatch + DAY_ACTIONS * XP.training;
   assert(dearest / day > 1.7 && dearest / day < 2.6, `two days for ${dearest} XP (day ${day})`);
 });
 check("MLB teammates keep their own ratings (200–250) when the team grows; they were all squashed to 200", () => {
@@ -3647,10 +3647,15 @@ check("Versus: two engines play a whole match over a laggy network; scores agree
     return c;
   };
   const hc = player("방장", 1),
-    gc = player("손님", 2),
-    before = [JSON.stringify(hc), JSON.stringify(gc)];
+    gc = player("손님", 2);
+  // The host is a pro with pro-scale stats, the guest a high-schooler: both play capped at 100.
+  Object.assign(hc, { stage: "pro", club: "triples", proUnlocked: true });
+  for (const k of Object.keys(hc.stats)) hc.stats[k] = 150;
+  hc.minDifficulty = "impossible";
+  const before = [JSON.stringify(hc), JSON.stringify(gc)];
   const he = new BaseballEngine(hc, seed(21)),
     ge = new BaseballEngine(gc, seed(22));
+  he.state.difficulty = "impossible";
   const hr = new Room("VSAB2", "host", "방장", net(40), () => T, false),
     gr = new Room("VSAB2", "guest", "손님", net(90), () => T, false);
   advance(1);
@@ -3670,6 +3675,11 @@ check("Versus: two engines play a whole match over a laggy network; scores agree
   assert.equal(ge.versus.mirror, false, "the guest bats first and runs the rules");
   assert.equal(he.versus.mirror, true);
   assert.equal(he.teams[0], ge.teams[1], "each sees the other's team");
+  assert.deepEqual([he.versus.cap, ge.versus.cap], [100, 100], "the lower league's cap for both");
+  assert(Object.values(he.playerStats).every((v) => v <= 100), "the pro plays at most 100");
+  const slot = he.teamSheet().slot;
+  assert.equal(ge.versus.roster.lineup[slot].contact, 100, "and the guest sees him capped");
+  assert.deepEqual([he.state.difficulty, ge.state.difficulty], ["normal", "normal"]);
   const rnd = seed(23);
   const bots = [he, ge].map(() => ({ swingAt: null, seen: null }));
   let pitches = 0,
@@ -3721,6 +3731,7 @@ check("Versus: two engines play a whole match over a laggy network; scores agree
   hv.quit();
   gv.quit();
   assert.equal(he.versus, null);
+  assert.equal(he.state.difficulty, "impossible", "his own difficulty is back after the match");
   assert.deepEqual([JSON.stringify(he.state.career), JSON.stringify(ge.state.career)], before);
   // Blending snapshots: positions move in between, the rest is the newer one.
   assert.deepEqual(blend({ ball: { x: 0, y: 2 }, outs: 1 }, { ball: { x: 10, y: 4 }, outs: 2 }, 0.5), {
