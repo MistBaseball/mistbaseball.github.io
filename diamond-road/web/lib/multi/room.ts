@@ -70,9 +70,8 @@ const median = (v: number[]) => {
 const SAMPLES = 7;
 
 export class Room {
-  readonly id = Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
+  /** This player in the room (kept across a page refresh, so the other side knows him). */
+  readonly id: string;
   private transport: Transport;
   private status: RoomStatus = "connecting";
   private peer: Peer | null = null;
@@ -97,7 +96,14 @@ export class Room {
     factory: TransportFactory,
     clock: () => number = () => performance.now(),
     autoTick = true,
+    id?: string,
   ) {
+    this.id =
+      id && /^[0-9a-f]{8}$/.test(id)
+        ? id
+        : Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) =>
+            b.toString(16).padStart(2, "0"),
+          ).join("");
     // (Plain fields, not constructor parameter properties: the checks run with Node's
     // type stripping, which does not accept those.)
     this.code = code;
@@ -138,6 +144,8 @@ export class Room {
     this.send("echo", { t0: now });
     if (this.peer) {
       this.send("ping", { t0: now, sp: this.ping });
+      // A guest who lost the host (the host's page was refreshed) says hello again.
+      if (this.role === "guest" && this.status === "lost") this.hello();
       if (this.status === "ready" && now - this.peer.seen > ROOM.lostAfter) this.status = "lost";
     } else if (this.role === "guest" && this.status === "connecting") {
       if (++this.tries > ROOM.joinTries) this.status = "notfound";

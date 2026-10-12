@@ -1390,9 +1390,16 @@ export class BaseballField {
       });
       while (this.tape.length && this.tape[0].t < l.elapsed - 4) this.tape.shift();
     }
+    // Replays turned off (settings): none queued, and one on screen closes.
+    if (!s.replays) {
+      this.replayPending = [];
+      this.replayQueue = [];
+      this.replay = null;
+      this.replaySrc = s.replay;
+    }
     // New highlight from the rules: wait until its window has been recorded.
     const r = s.replay;
-    if (r && r !== this.replaySrc) {
+    if (r && r !== this.replaySrc && s.replays) {
       this.replaySrc = r;
       this.replayPending.push({ r, play: l });
     }

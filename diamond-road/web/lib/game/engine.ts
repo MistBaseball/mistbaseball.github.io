@@ -775,6 +775,15 @@ export const DIFFICULTIES: { id: Difficulty; label: string; note: string }[] = [
 ];
 const DIFF_KEY = "diamond-road-difficulty";
 const SOUND_KEY = "diamond-road-sound";
+const REPLAY_KEY = "diamond-road-replays";
+/** Replays start on unless turned off before. */
+export const replaySetting = () => {
+  try {
+    return typeof localStorage === "undefined" || localStorage.getItem(REPLAY_KEY) !== "off";
+  } catch {
+    return true;
+  }
+};
 /** Sounds start off (browsers block sound before a click) unless turned on before. */
 export const soundSetting = () => {
   try {
@@ -860,7 +869,8 @@ export const SWING_STYLES: Record<
   // v12.5: power was nearly impossible to hit (bat area 0.4, window 0.45: average .04, 65%
   // strikeouts) and contact did everything. Now power trades contact for real extra bases.
   contact: { reach: 1.1, window: 1.1, cut: 1.3, foulBelow: 0.3, boost: 0.02, spread: [0.7, 0.2] },
-  power: { reach: 0.68, window: 0.72, cut: 0, foulBelow: 0.42, boost: 0.09, spread: [0.78, 0.42] },
+  // v13.3: trimmed (it beat contact at every skill level): reach 0.68, window 0.72, boost 0.09.
+  power: { reach: 0.62, window: 0.68, cut: 0, foulBelow: 0.42, boost: 0.07, spread: [0.78, 0.42] },
   bunt: { reach: 1.4, window: 1.3, cut: 0, foulBelow: 0.15, boost: 0, spread: [1, 0] },
 };
 /** How far (m) the bat aim may miss the ball and still make contact. */
@@ -2094,8 +2104,10 @@ export type VersusState = {
   result: { mine: number; theirs: number; reason?: string } | null;
   /** Our eight teammates (member 1–8; 0 unused) evened with the rival's (versus). */
   mates: Player[];
-  /** This browser's difficulty before the match (versus is always "normal"). */
+  /** This browser's difficulty before the match (given back when versus ends). */
   difficulty: Difficulty;
+  /** The match's difficulty (the host picks it; never saved, never a hall-of-fame board). */
+  level: Difficulty;
 };
 /**
  * Versus: both teams' teammates are evened out. Ratings go to the formula scale (pros mapped by
@@ -2149,6 +2161,8 @@ export const VERSUS_FIELDS = [
   "hbp",
   "lastResult",
 ] as const;
+/** A player's own match fields (saved with the versus match for a refresh, never sent). */
+const VERSUS_OWN = ["half", "maxInnings", "energy", "selected", "effort", "swingStyle"] as const;
 export type VersusSnap = Partial<Record<(typeof VERSUS_FIELDS)[number], unknown>> & {
   /** Which pitch / which play this is (the same one keeps its number across snapshots). */
   _flight?: number;
@@ -2180,6 +2194,8 @@ export type GameState = {
   autoField: boolean;
   /** Show name tags above the fielders. */
   nameTags: boolean;
+  /** Highlight replays (the small TV window); off = no replays at all. Kept in this browser. */
+  replays: boolean;
   aim: Vec;
   selected: PitchId;
   effort: number;
@@ -2285,6 +2301,7 @@ const initial = (career: Career, mode: Mode = "match", maxInnings = 3): GameStat
   autoCamera: true,
   autoField: true,
   nameTags: true,
+  replays: replaySetting(),
   aim: V(0, 0.95, 0),
   selected: "fastball",
   effort: 90,
@@ -2877,6 +2894,7 @@ export class BaseballEngine {
         "autoField",
         "autoCamera",
         "nameTags",
+        "replays",
         "rainOn",
       ] as const)
         (st as Record<string, unknown>)[k] = prev[k];
@@ -2942,6 +2960,14 @@ export class BaseballEngine {
   }
   set<K extends keyof GameState>(key: K, value: GameState[K]) {
     this.state[key] = value;
+    // Replays on/off is remembered in this browser.
+    if (key === "replays")
+      try {
+        if (typeof localStorage !== "undefined")
+          localStorage.setItem(REPLAY_KEY, value ? "on" : "off");
+      } catch {
+        /* private mode */
+      }
     // Sounds on/off is remembered in this browser.
     if (key === "sound")
       try {
@@ -2975,6 +3001,7 @@ export class BaseballEngine {
     this.state.autoField = previous.autoField;
     this.state.autoCamera = previous.autoCamera;
     this.state.nameTags = previous.nameTags;
+    this.state.replays = previous.replays;
     // Rain setting carries over; with rain off every match is clear.
     this.state.rainOn = previous.rainOn;
     if (!previous.rainOn) this.state.weather = "clear";
@@ -6443,6 +6470,7 @@ export class BaseballEngine {
     home: boolean;
     sheet: TeamSheet;
     innings: number;
+    level?: Difficulty;
     onThrow: (p: RemotePitch) => void;
   }) {
     const saved = JSON.stringify(this.state.career),
@@ -6452,8 +6480,9 @@ export class BaseballEngine {
     const ours = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => this.member(k));
     this.start("match", o.innings);
     const s = this.state;
-    // Versus is always on normal (not saved, so the hall-of-fame board is not touched).
-    s.difficulty = "normal";
+    // The match's difficulty (not saved, so the hall-of-fame board is not touched).
+    const level = o.level && isDifficulty(o.level) ? o.level : "normal";
+    s.difficulty = level;
     s.weather = "clear";
     s.rainOn = false;
     s.energy = 100;
@@ -6484,8 +6513,72 @@ export class BaseballEngine {
       result: null,
       mates: [ours[0], ...mine],
       difficulty,
+      level,
     };
     s.log = [`멀티 대결 · ${this.teams[1]} vs ${this.teams[0]}`];
+    this.emit();
+  }
+  /** Versus: everything needed to pick the match up again after a page refresh. */
+  versusSave() {
+    const v = this.versus;
+    if (!v) return null;
+    const st = this.state as unknown as Record<string, unknown>,
+      keys = [...VERSUS_FIELDS, ...VERSUS_OWN];
+    return {
+      home: v.home,
+      mirror: v.mirror,
+      sheet: v.sheet,
+      roster: v.roster,
+      mates: v.mates,
+      saved: v.saved,
+      difficulty: v.difficulty,
+      level: v.level,
+      state: Object.fromEntries(keys.map((k) => [k, st[k]])),
+    };
+  }
+  /**
+   * Versus after a refresh: the match as saved. The batter's side goes on from the last
+   * pitch boundary (a pitch or play that was under way starts again); the pitcher's side
+   * waits for the batter's next snapshot.
+   */
+  versusRestore(
+    d: NonNullable<ReturnType<BaseballEngine["versusSave"]>>,
+    onThrow: (p: RemotePitch) => void,
+  ) {
+    const st0 = d.state as Record<string, unknown>;
+    this.versus = null;
+    this.start("match", st0.maxInnings === 9 ? 9 : 3);
+    const s = this.state,
+      level = d.level && isDifficulty(d.level) ? d.level : "normal";
+    s.difficulty = level;
+    s.weather = "clear";
+    s.rainOn = false;
+    s.pineTar = false;
+    for (const k of [...VERSUS_FIELDS, ...VERSUS_OWN])
+      if (st0[k] !== undefined) (s as unknown as Record<string, unknown>)[k] = st0[k];
+    this.versus = {
+      home: d.home,
+      mirror: d.mirror,
+      sheet: d.sheet,
+      roster: d.roster,
+      mates: d.mates,
+      pitch: null,
+      waited: 0,
+      sent: false,
+      saved: d.saved,
+      onThrow,
+      result: null,
+      difficulty: d.difficulty,
+      level,
+    };
+    if (!d.mirror && s.phase !== "ready" && s.phase !== "result" && s.phase !== "between") {
+      s.flight = null;
+      s.live = null;
+      s.stealTrack = null;
+      this.ready();
+    }
+    s.replay = null;
+    s.flash = null;
     this.emit();
   }
   /** Versus: a new half. `batting`: this browser bats (and runs the rules) now. */
@@ -6543,6 +6636,16 @@ export class BaseballEngine {
     for (const k of VERSUS_FIELDS) {
       if (!(k in snap)) continue;
       const val = snap[k];
+      // A replay / callout / hit-by-pitch mark with the same id is the same one: keep the object
+      // (a new one every snapshot made the replay window open again and again).
+      if ((k === "replay" || k === "flash" || k === "hbp") && val && s[k]) {
+        if ((s[k] as { id?: number }).id === (val as { id?: number }).id) continue;
+      }
+      if (k === "flash" && val) {
+        const f = val as { tone: string };
+        s[k] = { ...f, tone: flipTone(f.tone) };
+        continue;
+      }
       if ((k === "flight" || k === "live") && val && s[k]) {
         // The same pitch or play as before: update it in place. The 3D view tells a new
         // pitch (swing animation) or play (replay tape) by the object, so a fresh copy every
@@ -6560,7 +6663,6 @@ export class BaseballEngine {
     const st = this.state;
     st.half = "top";
     st.resultTone = flipTone(st.resultTone) as string;
-    if (st.flash) st.flash = { ...st.flash, tone: flipTone(st.flash.tone) as string };
     if (st.phase !== "ready") v.sent = false;
     if (lag > 0 && st.phase === "windup") {
       st.timer -= lag;

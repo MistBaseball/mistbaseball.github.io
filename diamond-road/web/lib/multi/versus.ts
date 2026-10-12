@@ -14,7 +14,16 @@
  * Driven by `pump()` (every frame in the browser, by hand in the checks); time comes from the
  * injected clock, like the room.
  */
-import type { BaseballEngine, RemotePitch, TeamSheet, VersusSnap } from "../game/engine";
+import type {
+  BaseballEngine,
+  Difficulty,
+  RemotePitch,
+  TeamSheet,
+  VersusSnap,
+} from "../game/engine";
+// (Kept here, not imported: the checks load this file with Node's type stripping, where a
+// value import needs the file extension.)
+const LEVELS: Difficulty[] = ["baby", "easy", "normal", "hard", "impossible"];
 import type { Room } from "./room";
 import type { Msg } from "./transport";
 
@@ -26,13 +35,15 @@ export type VersusInfo = {
   home: boolean;
   opponent: string | null;
   innings: number;
+  /** The match's difficulty (the host picks it). */
+  level: Difficulty;
   result: { mine: number; theirs: number; reason?: string } | null;
   report: ReportState;
 };
 type Turn = { over: boolean; inning: number; batter: "host" | "guest" };
 
 /** Snapshot rate while the ball is in play (ms) and otherwise (keep-alive). */
-export const VERSUS = { liveEvery: 50, idleEvery: 400, interp: 110, lostAfter: 15000 };
+export const VERSUS = { liveEvery: 50, idleEvery: 400, interp: 110, lostAfter: 40000 };
 
 const LERP = new Set(["x", "y", "z", "progress", "elapsed"]);
 /** Blend two snapshots: positions and times in between, everything else from the newer. */
@@ -65,6 +76,9 @@ export class Versus {
   private handed = false;
   private buffer: { at: number; snap: VersusSnap }[] = [];
   private lostSince: number | null = null;
+  /** After a refresh: until then a room that is not back yet is not "the other one left". */
+  private graceUntil = -1;
+  private resumePending = false;
   private engine: BaseballEngine;
   private room: Room;
   private now: () => number;
@@ -89,6 +103,7 @@ export class Versus {
       home: room.role === "host",
       opponent: null,
       innings: 3,
+      level: "normal",
       result: null,
       report: "none",
     };
@@ -104,12 +119,12 @@ export class Versus {
   }
 
   /** Host: ask the guest for a match. */
-  invite(innings = 3) {
+  invite(innings = 3, level: Difficulty = this.info.level) {
     if (this.room.role !== "host" || this.room.state.status !== "ready") return false;
     if (this.engine.matchActive && !this.engine.versus) return false;
     const matchId = newMatchId();
-    this.room.send("vs-invite", { matchId, innings, sheet: this.engine.teamSheet() });
-    this.set({ stage: "inviting", matchId, innings, result: null, report: "none" });
+    this.room.send("vs-invite", { matchId, innings, level, sheet: this.engine.teamSheet() });
+    this.set({ stage: "inviting", matchId, innings, level, result: null, report: "none" });
     return true;
   }
   /** Guest: take the invitation. */
@@ -126,6 +141,46 @@ export class Versus {
     this.set({ stage: "idle", matchId: null });
   }
   /** Leave the match (the other side is told) and go back to single player. */
+  /** What a page refresh needs to go on with the match (null when not playing). */
+  save() {
+    const e = this.engine.versusSave();
+    if (this.info.stage !== "playing" || !e || !this.info.matchId) return null;
+    return {
+      matchId: this.info.matchId,
+      home: this.info.home,
+      innings: this.info.innings,
+      opponent: this.info.opponent,
+      opponentId: this.opponentId,
+      seq: this.seq,
+      engine: e,
+    };
+  }
+  /** After a refresh: the match comes back, and both sides check who is batting. */
+  restore(d: NonNullable<ReturnType<Versus["save"]>>) {
+    this.opponentId = d.opponentId;
+    // Our snapshot numbers go on above the ones the other side has seen.
+    this.seq = d.seq + 5000;
+    this.lastSeq = -1;
+    this.lastPhase = "";
+    this.handed = false;
+    this.buffer = [];
+    this.lostSince = null;
+    this.graceUntil = this.now() + VERSUS.lostAfter;
+    this.resumePending = true;
+    this.engine.versusRestore(d.engine, (p: RemotePitch) =>
+      this.room.send("vs-throw", { matchId: this.info.matchId, p }),
+    );
+    this.set({
+      stage: "playing",
+      matchId: d.matchId,
+      home: d.home,
+      innings: d.innings,
+      level: d.engine.level ?? "normal",
+      opponent: d.opponent,
+      result: null,
+      report: "none",
+    });
+  }
   quit() {
     if (this.info.stage === "playing") this.room.send("vs-end", { matchId: this.info.matchId });
     if (this.engine.versus) this.engine.endVersus();
@@ -146,6 +201,7 @@ export class Versus {
       home,
       sheet,
       innings: this.info.innings,
+      level: this.info.level,
       onThrow: (p: RemotePitch) => this.room.send("vs-throw", { matchId: this.info.matchId, p }),
     });
     // Top of the first: the guest bats.
@@ -164,6 +220,7 @@ export class Versus {
           stage: "invited",
           matchId: String(d.matchId),
           innings: d.innings === 9 ? 9 : 3,
+          level: LEVELS.includes(d.level as Difficulty) ? (d.level as Difficulty) : "normal",
           opponent: this.inviteSheet?.player ?? "상대",
           result: null,
           report: "none",
@@ -176,6 +233,13 @@ export class Versus {
       case "vs-decline":
         if (this.info.stage === "inviting" && mine) this.set({ stage: "idle", matchId: null });
         return;
+      case "vs-resume":
+        // Someone comes back to a match that is already over here: tell him so.
+        if (this.info.stage !== "playing" || !mine) {
+          this.room.send("vs-end", { matchId: d.matchId });
+          return;
+        }
+        break;
       case "vs-end":
         if (this.info.stage === "playing" && mine)
           this.finish("상대가 경기를 끝냈어요 · 기록 없음");
@@ -197,7 +261,32 @@ export class Versus {
         this.buffer = [];
         this.engine.applyVersusSnapshot(snap, this.oneWay());
       }
-    } else if (m.e === "vs-turn") this.applyTurn(d as unknown as Turn);
+    } else if (m.e === "vs-turn") {
+      const t = d as unknown as Turn,
+        meBat = (t.batter === "host") === (this.room.role === "host");
+      // Already in that half (the turn was sent again after a refresh): nothing to do.
+      if (
+        !t.over &&
+        v.mirror === !meBat &&
+        this.engine.state.inning === t.inning &&
+        this.engine.state.phase !== "between"
+      )
+        return;
+      this.applyTurn(t);
+    } else if (m.e === "vs-resume") {
+      // The other side came back after a refresh: tell it who bats now, and show it the state.
+      this.room.send("vs-where", {
+        matchId: this.info.matchId,
+        mirror: v.mirror,
+        inning: this.engine.state.inning,
+      });
+      this.lastPhase = "";
+    } else if (m.e === "vs-where") {
+      // Both think the same side bats: the one who came back takes the other side.
+      if (d.mirror === v.mirror)
+        this.engine.versusTurn(!!d.mirror, Number(d.inning) || this.engine.state.inning);
+      this.lastPhase = "";
+    }
   }
   /** One-way delay to the other player (s). */
   private oneWay() {
@@ -215,11 +304,16 @@ export class Versus {
       this.set({ stage: "idle" });
       return;
     }
-    if (status === "waiting" || status === "closed" || status === "error") {
+    const resuming = now < this.graceUntil;
+    if (this.resumePending && status === "ready") {
+      this.resumePending = false;
+      this.room.send("vs-resume", { matchId: this.info.matchId });
+    }
+    if (!resuming && (status === "waiting" || status === "closed" || status === "error")) {
       this.finish("상대가 나갔어요 · 기록 없음");
       return;
     }
-    if (status === "lost") {
+    if (status === "lost" || (resuming && status !== "ready")) {
       this.lostSince ??= now;
       if (now - this.lostSince > VERSUS.lostAfter) {
         this.finish("상대 연결이 끊겼어요 · 기록 없음");

@@ -22,7 +22,12 @@ import {
   useRoom,
   useVersus,
 } from "@/lib/multi/store";
-import type { BaseballEngine, GameState } from "@/lib/game/engine";
+import {
+  DIFFICULTIES,
+  type BaseballEngine,
+  type Difficulty,
+  type GameState,
+} from "@/lib/game/engine";
 import type { ReportState, VersusInfo } from "@/lib/multi/versus";
 import { RIVAL_LEAGUE } from "@/lib/multi/rivals";
 import { pingLevel, type RoomState, type RoomStatus } from "@/lib/multi/room";
@@ -76,9 +81,9 @@ export function MultiButton({
           <DialogHeader>
             <DialogTitle>멀티플레이 (베타)</DialogTitle>
             <DialogDescription>
-              친구와 1:1 대결(3이닝, 난이도 보통 고정). 한 명이 던지면 한 명이 치고, 이닝마다 공수를
-              바꿉니다. 수비는 AI가 맡아요. 나와 상대는 각자 자기 능력치 그대로, 팀 동료들은 두 팀의
-              평균에 맞춰져요. 내 명예의 전당 난이도에는 영향이 없어요.
+              친구와 1:1 대결(3이닝, 난이도는 방장이 골라요). 한 명이 던지면 한 명이 치고, 이닝마다
+              공수를 바꿉니다. 수비는 AI가 맡아요. 나와 상대는 각자 자기 능력치 그대로, 팀 동료들은
+              두 팀의 평균에 맞춰져요. 내 명예의 전당 난이도에는 영향이 없어요.
             </DialogDescription>
           </DialogHeader>
           {!multiAvailable() ? (
@@ -238,11 +243,15 @@ function VersusControls({
   engine: BaseballEngine;
   onStart: () => void;
 }) {
-  const busy = engine.matchActive && !engine.versus;
+  const busy = engine.matchActive && !engine.versus,
+    [level, setLevel] = useState<Difficulty>(vs.level);
   if (vs.stage === "invited")
     return (
       <div className="vs-invite">
-        <b>{vs.opponent}님이 대결을 신청했어요!</b>
+        <b>
+          {vs.opponent}님이 대결을 신청했어요! (난이도{" "}
+          {DIFFICULTIES.find((d) => d.id === vs.level)?.label ?? "보통"})
+        </b>
         <div>
           <button
             className="primary-button"
@@ -270,11 +279,29 @@ function VersusControls({
   if (room.role !== "host") return <p className="multi-note">방장이 대결을 신청하면 시작돼요.</p>;
   return (
     <>
+      <div className="creation-difficulty" role="radiogroup" aria-label="대결 난이도">
+        <span>
+          대결 난이도 <small>멀티 대결은 명예의 전당 난이도에 영향이 없어요</small>
+        </span>
+        <div>
+          {DIFFICULTIES.map((d) => (
+            <button
+              key={d.id}
+              role="radio"
+              aria-checked={level === d.id}
+              className={`subtle-button ${level === d.id ? "on" : ""}`}
+              onClick={() => setLevel(d.id)}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <button
         className="primary-button"
         disabled={busy}
         onClick={() => {
-          if (!currentVersus()?.invite(3)) toast.error("지금은 대결을 신청할 수 없어요");
+          if (!currentVersus()?.invite(3, level)) toast.error("지금은 대결을 신청할 수 없어요");
         }}
       >
         대결 신청 (3이닝)

@@ -36,6 +36,7 @@ import { TrainingMinigame, TRAINING_GAMES } from "@/components/game/Minigames";
 import { PatchNotesButton } from "@/components/game/PatchNotes";
 import { HallOfFameButton, HofResetForm } from "@/components/game/HallOfFame";
 import { MultiButton, PingBadge, VersusOverlay } from "@/components/game/Multiplayer";
+import { restoreMulti } from "@/lib/multi/store";
 import { CloudSave, CodeLoader, pullCareer, syncCareer } from "@/components/game/CloudSave";
 import { AiLab } from "@/components/game/AiLab";
 import { Sfx } from "@/lib/game/sound";
@@ -2769,8 +2770,13 @@ export default function DiamondGame() {
   };
   useEffect(() => {
     engine.load();
+    // A multiplayer room (and match) of this tab comes back after a refresh.
+    if (restoreMulti(engine)) {
+      setView("game");
+      toast.success("멀티 대결을 이어서 합니다");
+    }
     // A match left in the middle (refresh, closed tab) picks up where it stopped.
-    if (engine.resumeMatch()) {
+    else if (engine.resumeMatch()) {
       setView("game");
       toast.success("하던 경기를 이어서 합니다");
     }
@@ -3949,6 +3955,14 @@ export default function DiamondGame() {
               id="name-tags"
               checked={s.nameTags}
               onCheckedChange={(v) => engine.set("nameTags", v)}
+            />
+          </div>
+          <div className="settings-row">
+            <label htmlFor="replays">하이라이트 리플레이</label>
+            <Switch
+              id="replays"
+              checked={s.replays}
+              onCheckedChange={(v) => engine.set("replays", v)}
             />
           </div>
           <div className="settings-row">

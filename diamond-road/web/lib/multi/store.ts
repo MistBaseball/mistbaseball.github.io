@@ -20,16 +20,62 @@ export function bindEngine(e: BaseballEngine) {
   engine = e;
 }
 
-function enter(code: string, role: "host" | "guest", name: string) {
+/** The room (and a match in it) survive a page refresh in this tab (sessionStorage). */
+const SESSION_KEY = "diamond-road-multi";
+type Session = {
+  code: string;
+  role: "host" | "guest";
+  id: string;
+  name: string;
+  versus: ReturnType<Versus["save"]>;
+};
+let saveTick = 0;
+function saveSession() {
+  try {
+    if (!room) sessionStorage.removeItem(SESSION_KEY);
+    else {
+      const d: Session = {
+        code: room.code,
+        role: room.role,
+        id: room.id,
+        name: room.state.name,
+        versus: versus?.save() ?? null,
+      };
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(d));
+    }
+  } catch {
+    /* private mode or full: no resume after a refresh */
+  }
+}
+/** After a page refresh: back into the room and the match (call after the career is loaded). */
+export function restoreMulti(e: BaseballEngine) {
+  engine = e;
+  let d: Session | null = null;
+  try {
+    d = JSON.parse(sessionStorage.getItem(SESSION_KEY) ?? "null") as Session | null;
+  } catch {
+    d = null;
+  }
+  if (!d || !normalizeRoomCode(d.code) || (d.role !== "host" && d.role !== "guest")) return false;
+  if (!enter(d.code, d.role, d.name, d.id)) return false;
+  if (d.versus && versus) versus.restore(d.versus);
+  return !!d.versus;
+}
+
+function enter(code: string, role: "host" | "guest", name: string, id?: string) {
   const factory = pickTransport();
   if (!factory || !engine) return false;
   leave();
-  room = new Room(code, role, name, factory);
+  room = new Room(code, role, name, factory, undefined, true, id);
   versus = new Versus(engine, room);
   const e = engine;
   versus.onReport = (r) => reportVersus(e.state.career, profileOf(e.state.career), r);
   unsubs = [room.subscribe(notify), versus.subscribe(notify)];
-  pumpTimer = setInterval(() => versus?.pump(), 16);
+  pumpTimer = setInterval(() => {
+    versus?.pump();
+    if (++saveTick % 30 === 0) saveSession();
+  }, 16);
+  saveSession();
   notify();
   return true;
 }
@@ -53,6 +99,7 @@ export function leave() {
   room?.leave();
   room = null;
   versus = null;
+  saveSession();
   notify();
 }
 export const currentRoom = () => room;
