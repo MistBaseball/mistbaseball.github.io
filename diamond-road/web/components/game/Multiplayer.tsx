@@ -2,7 +2,7 @@
  * Multiplayer (stage 1): the header button, the room window (open a room / join by code) and
  * the ping badge. The badge sits in the header, so it never covers the field.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Users } from "lucide-react";
 import {
@@ -12,7 +12,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { hostRoom, joinRoom, leave, multiAvailable, useRoom } from "@/lib/multi/store";
+import {
+  bindEngine,
+  currentVersus,
+  hostRoom,
+  joinRoom,
+  leave,
+  multiAvailable,
+  useRoom,
+  useVersus,
+} from "@/lib/multi/store";
+import type { BaseballEngine, GameState } from "@/lib/game/engine";
+import type { ReportState, VersusInfo } from "@/lib/multi/versus";
+import { RIVAL_LEAGUE } from "@/lib/multi/rivals";
 import { pingLevel, type RoomState, type RoomStatus } from "@/lib/multi/room";
 
 const STATUS_TEXT: Record<RoomStatus, string> = {
@@ -27,11 +39,31 @@ const STATUS_TEXT: Record<RoomStatus, string> = {
 };
 const ms = (v: number | null) => (v === null ? "—" : `${v} ms`);
 
-export function MultiButton({ name }: { name: string }) {
+export function MultiButton({
+  engine,
+  name,
+  onStart,
+}: {
+  engine: BaseballEngine;
+  name: string;
+  onStart: () => void;
+}) {
   const [open, setOpen] = useState(false),
     [code, setCode] = useState(""),
     room = useRoom(),
+    vs = useVersus(),
     nick = name.trim() || "선수";
+  useEffect(() => bindEngine(engine), [engine]);
+  // An invitation opens the window; a match that starts goes to the field.
+  const stage = vs?.stage;
+  useEffect(() => {
+    if (stage === "invited") setOpen(true);
+    if (stage === "playing") {
+      setOpen(false);
+      onStart();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage]);
   return (
     <>
       <button className="patch-button" onClick={() => setOpen(true)} aria-label="멀티플레이">
@@ -44,8 +76,9 @@ export function MultiButton({ name }: { name: string }) {
           <DialogHeader>
             <DialogTitle>멀티플레이 (베타)</DialogTitle>
             <DialogDescription>
-              친구와 1:1 대결. 한 명은 투수, 한 명은 타자를 맡고 이닝마다 공수를 바꿉니다. 지금은 방
-              만들기·입장과 핑 확인까지 되고, 대결은 다음 업데이트에서 열려요.
+              친구와 1:1 대결(3이닝). 한 명이 던지면 한 명이 치고, 이닝마다 공수를 바꿉니다. 수비는
+              AI가 맡아요. 결과는 명예의 전당 「{RIVAL_LEAGUE}」에 승·패로 기록됩니다(두 사람 모두
+              명예의 전당 닉네임이 있을 때).
             </DialogDescription>
           </DialogHeader>
           {!multiAvailable() ? (
@@ -84,7 +117,7 @@ export function MultiButton({ name }: { name: string }) {
               {room?.status === "closed" && <p className="multi-note">{STATUS_TEXT.closed}</p>}
             </div>
           ) : (
-            <RoomView room={room} />
+            <RoomView room={room} vs={vs} engine={engine} onStart={onStart} />
           )}
         </DialogContent>
       </Dialog>
@@ -92,7 +125,17 @@ export function MultiButton({ name }: { name: string }) {
   );
 }
 
-function RoomView({ room }: { room: RoomState }) {
+function RoomView({
+  room,
+  vs,
+  engine,
+  onStart,
+}: {
+  room: RoomState;
+  vs: VersusInfo | null;
+  engine: BaseballEngine;
+  onStart: () => void;
+}) {
   const lag =
     room.peer && room.ping !== null && room.peer.ping !== null
       ? Math.round((room.ping + room.peer.ping) / 2)
@@ -141,6 +184,9 @@ function RoomView({ room }: { room: RoomState }) {
               : "많이 늦어요. 대결하기엔 불편할 수 있어요."}
         </p>
       )}
+      {room.status === "ready" && vs && (
+        <VersusControls room={room} vs={vs} engine={engine} onStart={onStart} />
+      )}
       <button className="subtle-button" onClick={() => leave()}>
         {room.status === "ready" || room.status === "waiting" || room.status === "lost"
           ? "방 나가기"
@@ -178,5 +224,143 @@ export function PingBadge() {
         상대 {room.peer ? (peer === null ? "—" : peer) : "—"}
       </span>
     </span>
+  );
+}
+
+function VersusControls({
+  room,
+  vs,
+  engine,
+  onStart,
+}: {
+  room: RoomState;
+  vs: VersusInfo;
+  engine: BaseballEngine;
+  onStart: () => void;
+}) {
+  const busy = engine.matchActive && !engine.versus;
+  if (vs.stage === "invited")
+    return (
+      <div className="vs-invite">
+        <b>{vs.opponent}님이 대결을 신청했어요!</b>
+        <div>
+          <button
+            className="primary-button"
+            onClick={() => {
+              if (!currentVersus()?.accept())
+                toast.error("진행 중인 시즌 경기를 끝낸 뒤에 받을 수 있어요");
+            }}
+          >
+            수락
+          </button>
+          <button className="subtle-button" onClick={() => currentVersus()?.decline()}>
+            거절
+          </button>
+        </div>
+        {busy && <small>진행 중인 시즌 경기가 있으면 먼저 끝내야 해요.</small>}
+      </div>
+    );
+  if (vs.stage === "inviting") return <p className="multi-note">상대의 수락을 기다리는 중…</p>;
+  if (vs.stage === "playing")
+    return (
+      <button className="primary-button" onClick={onStart}>
+        대결 화면으로
+      </button>
+    );
+  if (room.role !== "host") return <p className="multi-note">방장이 대결을 신청하면 시작돼요.</p>;
+  return (
+    <>
+      <button
+        className="primary-button"
+        disabled={busy}
+        onClick={() => {
+          if (!currentVersus()?.invite(3)) toast.error("지금은 대결을 신청할 수 없어요");
+        }}
+      >
+        대결 신청 (3이닝)
+      </button>
+      {busy && <small className="multi-note">진행 중인 시즌 경기를 끝내야 대결할 수 있어요.</small>}
+    </>
+  );
+}
+
+const REPORT_TEXT: Record<ReportState, string> = {
+  none: "",
+  skip: "",
+  sending: `${RIVAL_LEAGUE}에 결과를 올리는 중…`,
+  counted: `${RIVAL_LEAGUE}에 기록됐어요!`,
+  waiting: "상대의 결과 보고를 기다리는 중이에요 (상대가 보고하면 반영돼요)",
+  mismatch: "두 사람의 점수가 달라 기록되지 않았어요",
+  fail: `${RIVAL_LEAGUE} 기록 실패 (서버 설정을 확인해 주세요)`,
+};
+
+/** Over the field in a versus match: the change of sides, and the end of the match. */
+export function VersusOverlay({
+  engine,
+  s,
+  onLeave,
+}: {
+  engine: BaseballEngine;
+  s: GameState;
+  onLeave: () => void;
+}) {
+  const vs = useVersus(),
+    room = useRoom();
+  if (s.phase === "between")
+    return (
+      <div className="game-overlay">
+        <span className="eyebrow">멀티 대결</span>
+        <h2>{s.message}</h2>
+        <p>상대 화면과 맞추는 중…</p>
+      </div>
+    );
+  const result = engine.versus?.result,
+    report = vs?.report ?? "none";
+  return (
+    <div className="game-overlay">
+      <span className="eyebrow">
+        멀티 대결 · {engine.teams[1]} vs {engine.teams[0]}
+      </span>
+      <h2>{s.message}</h2>
+      <p>{s.detail}</p>
+      {!result?.reason && report === "skip" && (
+        <p className="multi-note">
+          명예의 전당 닉네임이 두 사람 모두 있어야 {RIVAL_LEAGUE}에 기록돼요.
+        </p>
+      )}
+      {REPORT_TEXT[report] && <p className="multi-note">{REPORT_TEXT[report]}</p>}
+      {vs?.stage === "invited" ? (
+        <div className="vs-invite">
+          <b>{vs.opponent}님이 한 판 더 하재요!</b>
+          <div>
+            <button className="primary-button" onClick={() => currentVersus()?.accept()}>
+              수락
+            </button>
+            <button className="subtle-button" onClick={() => currentVersus()?.decline()}>
+              거절
+            </button>
+          </div>
+        </div>
+      ) : room?.role === "host" && room.status === "ready" ? (
+        <button
+          className="primary-button"
+          disabled={vs?.stage === "inviting"}
+          onClick={() => currentVersus()?.invite(3)}
+        >
+          {vs?.stage === "inviting" ? "상대 수락 기다리는 중…" : "한 판 더"}
+        </button>
+      ) : (
+        <p className="multi-note">방장이 한 판 더 신청하면 바로 시작돼요.</p>
+      )}
+      <button
+        className="subtle-button"
+        onClick={() => {
+          currentVersus()?.quit();
+          onLeave();
+        }}
+      >
+        멀티 대결 끝내기 (혼자 하기로)
+      </button>
+    </div>
   );
 }

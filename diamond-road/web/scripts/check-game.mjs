@@ -81,6 +81,7 @@ import {
 import { randomSituation, runPlay, engineFor, lcg as aiSeed } from "../lib/ai/scenario.ts";
 import { applyLevel } from "../lib/ai/levels.ts";
 import { Room, ROOM, normalizeRoomCode, pingLevel } from "../lib/multi/room.ts";
+import { Versus, blend } from "../lib/multi/versus.ts";
 
 let passed = 0;
 const check = (name, fn) => {
@@ -3603,6 +3604,129 @@ check("Multiplayer room: meeting by code, each side's ping, round trip and clock
   }
   assert.equal(lone.state.status, "notfound");
   host.leave();
+});
+check("Versus: two engines play a whole match over a laggy network; scores agree, careers untouched", () => {
+  let T = 0;
+  const queue = [],
+    rooms = new Map();
+  const net = (ping) => (code, h) => {
+    const me = { h, ping, closed: false };
+    if (!rooms.has(code)) rooms.set(code, new Set());
+    rooms.get(code).add(me);
+    queue.push({ at: T, fn: () => h.onStatus("open") });
+    return {
+      send(m) {
+        const copy = JSON.parse(JSON.stringify(m)); // what really goes over the wire
+        if (m.e === "echo") queue.push({ at: T + me.ping, fn: () => !me.closed && h.onMessage(copy) });
+        for (const o of rooms.get(code))
+          if (o !== me)
+            queue.push({ at: T + (me.ping + o.ping) / 2, fn: () => !o.closed && o.h.onMessage(copy) });
+      },
+      close() {
+        me.closed = true;
+      },
+    };
+  };
+  const advance = (ms) => {
+    const end = T + ms;
+    for (;;) {
+      queue.sort((a, b) => a.at - b.at);
+      if (!queue.length || queue[0].at > end) break;
+      const e = queue.shift();
+      T = Math.max(T, e.at);
+      e.fn();
+    }
+    T = end;
+  };
+  const player = (name, n) => {
+    const c = newCareer();
+    c.created = true;
+    c.team = "triples";
+    c.name = name;
+    c.hofId = `00000000-0000-4000-a000-00000000000${n}`;
+    return c;
+  };
+  const hc = player("방장", 1),
+    gc = player("손님", 2),
+    before = [JSON.stringify(hc), JSON.stringify(gc)];
+  const he = new BaseballEngine(hc, seed(21)),
+    ge = new BaseballEngine(gc, seed(22));
+  const hr = new Room("VSAB2", "host", "방장", net(40), () => T, false),
+    gr = new Room("VSAB2", "guest", "손님", net(90), () => T, false);
+  advance(1);
+  hr.tick();
+  gr.tick();
+  advance(500);
+  assert.equal(hr.state.status, "ready");
+  const hv = new Versus(he, hr, () => T),
+    gv = new Versus(ge, gr, () => T);
+  assert(hv.invite(3));
+  advance(200);
+  assert.equal(gv.info.stage, "invited");
+  assert.equal(gv.info.opponent, "방장");
+  assert(gv.accept());
+  advance(200);
+  assert.equal(hv.info.stage, "playing");
+  assert.equal(ge.versus.mirror, false, "the guest bats first and runs the rules");
+  assert.equal(he.versus.mirror, true);
+  assert.equal(he.teams[0], ge.teams[1], "each sees the other's team");
+  const rnd = seed(23);
+  const bots = [he, ge].map(() => ({ swingAt: null, seen: null }));
+  let pitches = 0,
+    mirrorFlights = 0,
+    lastRoomTick = 0;
+  const dt = 1 / 60;
+  for (let step = 0; step < 60 * 60 * 25 && (hv.info.stage === "playing" || gv.info.stage === "playing"); step++) {
+    [he, ge].forEach((e, i) => {
+      const v = e.versus,
+        st = e.state,
+        b = bots[i];
+      if (!v) return;
+      if (v.mirror && st.phase === "ready" && !v.sent) {
+        if (e.throwAt((rnd() - 0.5) * 0.5, 0.6 + rnd() * 0.6)) pitches++;
+      }
+      if (v.mirror && st.phase === "flight") mirrorFlights++;
+      if (!v.mirror && st.phase === "flight" && st.flight && b.seen !== st.flight) {
+        b.seen = st.flight;
+        b.swingAt = rnd() < 0.7 ? st.flight.visualDuration * (0.92 + (rnd() - 0.5) * 0.08) : null;
+        const h = st.flight.hint ?? st.flight.target;
+        e.setAim(h.x, h.y);
+      }
+      if (!v.mirror && st.phase === "flight" && b.swingAt !== null && st.flight.elapsed >= b.swingAt) {
+        e.swing();
+        b.swingAt = null;
+      }
+      e.tick(dt);
+    });
+    advance(dt * 1000);
+    if (T - lastRoomTick >= ROOM.pingEvery) {
+      lastRoomTick = T;
+      hr.tick();
+      gr.tick();
+    }
+    hv.pump();
+    gv.pump();
+  }
+  assert.equal(hv.info.stage, "over", `host ${hv.info.stage} (inning ${he.state.inning} ${he.state.half} ${he.state.phase})`);
+  assert.equal(gv.info.stage, "over");
+  const a = hv.info.result,
+    b = gv.info.result;
+  assert(!a.reason && !b.reason, "a full match, not cut short");
+  assert.deepEqual([a.mine, a.theirs], [b.theirs, b.mine], `host ${a.mine}:${a.theirs}, guest ${b.mine}:${b.theirs}`);
+  assert(pitches > 20, `pitches thrown from the mirror: ${pitches}`);
+  assert(mirrorFlights > 0, "the pitcher saw his pitches fly");
+  assert(he.state.inning >= 3 && ge.state.inning >= 3);
+  assert.equal(he.state.message, a.mine > a.theirs ? "VICTORY" : a.mine < a.theirs ? "GAME OVER" : "DRAW");
+  // Nothing of the match is written into either career.
+  hv.quit();
+  gv.quit();
+  assert.equal(he.versus, null);
+  assert.deepEqual([JSON.stringify(he.state.career), JSON.stringify(ge.state.career)], before);
+  // Blending snapshots: positions move in between, the rest is the newer one.
+  assert.deepEqual(blend({ ball: { x: 0, y: 2 }, outs: 1 }, { ball: { x: 10, y: 4 }, outs: 2 }, 0.5), {
+    ball: { x: 5, y: 3 },
+    outs: 2,
+  });
 });
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();

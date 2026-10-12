@@ -35,7 +35,7 @@ import {
 import { TrainingMinigame, TRAINING_GAMES } from "@/components/game/Minigames";
 import { PatchNotesButton } from "@/components/game/PatchNotes";
 import { HallOfFameButton, HofResetForm } from "@/components/game/HallOfFame";
-import { MultiButton, PingBadge } from "@/components/game/Multiplayer";
+import { MultiButton, PingBadge, VersusOverlay } from "@/components/game/Multiplayer";
 import { CloudSave, CodeLoader, pullCareer, syncCareer } from "@/components/game/CloudSave";
 import { AiLab } from "@/components/game/AiLab";
 import { Sfx } from "@/lib/game/sound";
@@ -372,8 +372,8 @@ function TeamLogo({ name }: { name: string }) {
     </span>
   );
 }
-function Scoreboard({ s }: { s: GameState }) {
-  const [away, home] = matchTeams(s.career);
+function Scoreboard({ s, teams }: { s: GameState; teams?: [string, string] }) {
+  const [away, home] = teams ?? matchTeams(s.career);
   return (
     <div className="scoreboard">
       <div className="board-match">
@@ -698,7 +698,7 @@ function BattingFeedback({ s }: { s: GameState }) {
     </p>
   );
 }
-function LineScore({ s }: { s: GameState }) {
+function LineScore({ s, teams }: { s: GameState; teams?: [string, string] }) {
   return (
     <div className="line-score">
       <table>
@@ -715,8 +715,8 @@ function LineScore({ s }: { s: GameState }) {
           </tr>
         </thead>
         <tbody>
-          {matchTeams(s.career).map((name, i) => (
-            <tr key={name}>
+          {(teams ?? matchTeams(s.career)).map((name, i) => (
+            <tr key={`${i}${name}`}>
               <th>{name}</th>
               {s.lines[i].map((n, j) => (
                 <td className={j === s.inning - 1 ? "current" : ""} key={j}>
@@ -3038,7 +3038,7 @@ export default function DiamondGame() {
           </a>
           <PatchNotesButton />
           <HallOfFameButton engine={engine} career={s.career} />
-          <MultiButton name={s.career.name} />
+          <MultiButton engine={engine} name={s.career.name} onStart={() => setView("game")} />
           <button className="patch-button" onClick={() => setHelp(true)} aria-label="조작법">
             <BookOpen size={15} />
             <span>조작법</span>
@@ -3096,7 +3096,7 @@ export default function DiamondGame() {
         </div>
         <div className="game-layout">
           <section className="game-main">
-            <Scoreboard s={s} />
+            <Scoreboard s={s} teams={engine.teams} />
             <div
               className={`game-stage ${batting && (s.phase === "windup" || s.phase === "flight") ? "batting-live" : ""}`}
               ref={stage}
@@ -3253,7 +3253,7 @@ export default function DiamondGame() {
                 <strong>{s.message}</strong>
                 <span>{s.detail}</span>
               </div>
-              <SkillDock engine={engine} s={s} />
+              {!engine.versus && <SkillDock engine={engine} s={s} />}
               <div className="field-bottom">
                 <div className="pitcher-badge">
                   <span className="uniform-number">18</span>
@@ -3267,7 +3267,7 @@ export default function DiamondGame() {
                     <span>
                       {batting
                         ? `${engine.batter.hand === "L" ? "좌" : "우"}타 · 컨택 ${engine.batter.contact} · 파워 ${engine.batter.power} · 주력 ${engine.batter.speed}`
-                        : `우완 투수 · ${matchTeams(s.career)[1]}`}
+                        : `우완 투수 · ${engine.teams[1]}`}
                     </span>
                   </div>
                 </div>
@@ -3280,76 +3280,80 @@ export default function DiamondGame() {
                 </div>
               </div>
               <Callout s={s} />
-              {(manualPause || s.phase === "between" || s.phase === "finished") && (
-                <div className="game-overlay">
-                  <span className="eyebrow">DIAMOND ROAD</span>
-                  <h2>{manualPause ? "잠시, 숨 고르기." : s.message}</h2>
-                  <p>{manualPause ? "준비되면 경기를 이어가세요." : s.detail}</p>
-                  {!manualPause && s.phase === "between" && s.coin && (
-                    <CoinToss coin={s.coin} onDone={() => setCoinSeen(s.coin)} />
-                  )}
-                  {!manualPause && s.phase === "finished" && (
-                    <>
-                      {s.lastScout && (
-                        <ScoutMeter
-                          s={s}
-                          before={s.lastScout.before}
-                          after={s.lastScout.after}
-                          big
-                        />
+              {engine.versus && !manualPause
+                ? (s.phase === "between" || s.phase === "finished") && (
+                    <VersusOverlay engine={engine} s={s} onLeave={() => setView("life")} />
+                  )
+                : (manualPause || s.phase === "between" || s.phase === "finished") && (
+                    <div className="game-overlay">
+                      <span className="eyebrow">DIAMOND ROAD</span>
+                      <h2>{manualPause ? "잠시, 숨 고르기." : s.message}</h2>
+                      <p>{manualPause ? "준비되면 경기를 이어가세요." : s.detail}</p>
+                      {!manualPause && s.phase === "between" && s.coin && (
+                        <CoinToss coin={s.coin} onDone={() => setCoinSeen(s.coin)} />
                       )}
-                      <RecapBreakdown
-                        scoutParts={trustMaxed(s) ? [] : s.lastScoutParts}
-                        xpParts={s.lastXpParts}
-                        scoutLabel={gaugeName(s.career)}
-                      />
-                      <p>
-                        경험치 <b>+{s.lastXpGain} XP</b> 획득 · 보유 {s.career.xp} XP
-                      </p>
-                    </>
+                      {!manualPause && s.phase === "finished" && (
+                        <>
+                          {s.lastScout && (
+                            <ScoutMeter
+                              s={s}
+                              before={s.lastScout.before}
+                              after={s.lastScout.after}
+                              big
+                            />
+                          )}
+                          <RecapBreakdown
+                            scoutParts={trustMaxed(s) ? [] : s.lastScoutParts}
+                            xpParts={s.lastXpParts}
+                            scoutLabel={gaugeName(s.career)}
+                          />
+                          <p>
+                            경험치 <b>+{s.lastXpGain} XP</b> 획득 · 보유 {s.career.xp} XP
+                          </p>
+                        </>
+                      )}
+                      <button
+                        className="primary-button"
+                        // Wait for the coin to land before going on.
+                        disabled={
+                          !manualPause && s.phase === "between" && !!s.coin && coinSeen !== s.coin
+                        }
+                        onClick={() => {
+                          if (manualPause) setManualPause(false);
+                          else if (s.phase === "between") engine.continueInning();
+                          else {
+                            setRecap({
+                              day: s.career.day - 1,
+                              message: s.message,
+                              score: (([away, home]) =>
+                                `${home} ${s.score[1]} : ${s.score[0]} ${away}`)(
+                                matchTeams({ ...s.career, day: s.career.day - 1 }),
+                              ),
+                              xp: s.lastXpGain,
+                              scout: s.lastScout,
+                              scoutParts: s.lastScoutParts,
+                              xpParts: s.lastXpParts,
+                            });
+                            engine.start("match");
+                            setView("life");
+                          }
+                        }}
+                      >
+                        <Play size={17} />
+                        {manualPause
+                          ? "경기 재개"
+                          : s.phase === "between" && s.coin?.result === "cancel"
+                            ? coinSeen === s.coin
+                              ? "우천취소 · 경기 종료"
+                              : "동전 결과 기다리는 중"
+                            : s.phase === "between"
+                              ? s.half === "top"
+                                ? "타격 시작"
+                                : "다음 이닝 투구"
+                              : "하루 마무리하기"}
+                      </button>
+                    </div>
                   )}
-                  <button
-                    className="primary-button"
-                    // Wait for the coin to land before going on.
-                    disabled={
-                      !manualPause && s.phase === "between" && !!s.coin && coinSeen !== s.coin
-                    }
-                    onClick={() => {
-                      if (manualPause) setManualPause(false);
-                      else if (s.phase === "between") engine.continueInning();
-                      else {
-                        setRecap({
-                          day: s.career.day - 1,
-                          message: s.message,
-                          score: (([away, home]) =>
-                            `${home} ${s.score[1]} : ${s.score[0]} ${away}`)(
-                            matchTeams({ ...s.career, day: s.career.day - 1 }),
-                          ),
-                          xp: s.lastXpGain,
-                          scout: s.lastScout,
-                          scoutParts: s.lastScoutParts,
-                          xpParts: s.lastXpParts,
-                        });
-                        engine.start("match");
-                        setView("life");
-                      }
-                    }}
-                  >
-                    <Play size={17} />
-                    {manualPause
-                      ? "경기 재개"
-                      : s.phase === "between" && s.coin?.result === "cancel"
-                        ? coinSeen === s.coin
-                          ? "우천취소 · 경기 종료"
-                          : "동전 결과 기다리는 중"
-                        : s.phase === "between"
-                          ? s.half === "top"
-                            ? "타격 시작"
-                            : "다음 이닝 투구"
-                          : "하루 마무리하기"}
-                  </button>
-                </div>
-              )}
             </div>
             <div className="camera-row">
               <span>
@@ -3371,7 +3375,7 @@ export default function DiamondGame() {
               <kbd>C</kbd>
             </div>
             <div className="below-field">
-              <LineScore s={s} />
+              <LineScore s={s} teams={engine.teams} />
               <div className="match-report">
                 <span className="eyebrow">직전 플레이</span>
                 <p>{s.log[0]}</p>

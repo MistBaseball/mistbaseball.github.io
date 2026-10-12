@@ -6206,3 +6206,18 @@ kbd {
 .header-actions:has(.ping-badge) .prototype-tag {
   display: none;
 }
+.vs-invite {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #f4d48c88;
+  background: rgba(244, 212, 140, 0.08);
+}
+.vs-invite > div {
+  display: flex;
+  gap: 8px;
+}
+.game-overlay .multi-note {
+  max-width: 420px;
+}

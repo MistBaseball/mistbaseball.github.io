@@ -441,6 +441,8 @@ export const SWING_GOOD = 0.045;
  * Change numbers here; the rules read them, nothing else hard-codes them.
  */
 export const RULES = {
+  /** Versus: seconds the batter waits for the rival pitcher before an AI pitch goes. */
+  versusPitchWait: 25,
   /** Wild pitch chance per pitch with runners on: base + fatigue * ((100 - energy) / 100)^2. */
   wildPitchBase: 0.004,
   wildPitchFatigue: 0.075,
@@ -2044,6 +2046,84 @@ export type Chooser = (ctx: number[], options: number[][]) => number;
 export const AI_CTX = 10,
   AI_RUNNER = 12,
   AI_HOLDER = 13;
+/**
+ * Multiplayer (versus): what a player brings to a match: his team's lineup in batting order
+ * (he is in it with his own stats) and his pitching numbers.
+ */
+export type TeamSheet = {
+  team: string;
+  player: string;
+  /** Hall-of-fame id (for the win/loss board), if he has one. */
+  playerId?: string;
+  stats: Career["stats"];
+  pitches: PitchId[];
+  lineup: Player[];
+};
+/** A pitch chosen on the pitcher's screen, thrown on the batter's (his numbers come along). */
+export type RemotePitch = {
+  pitch: PitchId;
+  aim: { x: number; y: number };
+  velocity: number;
+  control: number;
+  movement: number;
+  energy: number;
+  effort: number;
+  form: number;
+};
+/**
+ * Versus match state. Each half the BATTER's browser runs the rules (its engine bats in the
+ * "bottom" half as in a normal match, the rival pitcher's pitches arrive as RemotePitch) and
+ * the pitcher's browser is a mirror (`mirror`): it shows the batter's snapshots, flipped to
+ * its own side, and sends its pitches. The sides swap every half.
+ */
+export type VersusState = {
+  home: boolean;
+  mirror: boolean;
+  sheet: TeamSheet;
+  roster: Roster;
+  pitch: RemotePitch | null;
+  waited: number;
+  sent: boolean;
+  /** The career as it was: a versus match never changes it. */
+  saved: string;
+  onThrow: ((p: RemotePitch) => void) | null;
+  result: { mine: number; theirs: number; reason?: string } | null;
+};
+/** What the batter's browser sends to the pitcher's (its own side's view). */
+export const VERSUS_FIELDS = [
+  "phase",
+  "inning",
+  "score",
+  "lines",
+  "hits",
+  "errors",
+  "order",
+  "pitchCount",
+  "balls",
+  "strikes",
+  "outs",
+  "bases",
+  "message",
+  "detail",
+  "resultTone",
+  "timer",
+  "flight",
+  "live",
+  "ball",
+  "stealTrack",
+  "lastSpeed",
+  "lastPitch",
+  "lastDistance",
+  "history",
+  "flash",
+  "replay",
+  "hbp",
+  "lastResult",
+] as const;
+export type VersusSnap = Partial<Record<(typeof VERSUS_FIELDS)[number], unknown>>;
+const PAIRED = new Set(["score", "lines", "hits", "errors", "order", "pitchCount"]);
+const flipTone = (t: unknown) => (t === "gold" ? "red" : t === "red" ? "gold" : t);
+
 export type GameState = {
   mode: Mode;
   phase: Phase;
@@ -2313,6 +2393,7 @@ export class BaseballEngine {
   }
   /** Today's opponent: a rival high school (new each day) or a rival pro club. */
   get awayRoster(): Roster {
+    if (this.versus) return this.versus.roster;
     const c = this.state.career,
       [away] = matchTeams(c);
     const tier = tierOf(c);
@@ -2472,8 +2553,12 @@ export class BaseballEngine {
   }
   /** [visiting team, our team] for the scoreboard and the log. */
   get teams(): [string, string] {
-    return matchTeams(this.state.career);
+    const t = matchTeams(this.state.career);
+    // Versus: the two players' names (both teams are often the same school).
+    return this.versus ? [this.versus.sheet.player, this.state.career.name || "나"] : t;
   }
+  /** Multiplayer match in progress (null in single player). */
+  versus: VersusState | null = null;
   sound(kind: string) {
     if (this.state.sound) this.soundCallback(kind);
   }
@@ -2490,6 +2575,8 @@ export class BaseballEngine {
    */
   private loaded = false;
   persist() {
+    // A versus match never touches the saved career.
+    if (this.versus) return;
     try {
       if (
         !this.loaded &&
@@ -2676,7 +2763,7 @@ export class BaseballEngine {
   private underway: "pitch" | "play" | null = null;
   private autoSaveMatch() {
     const s = this.state;
-    if (s.mode !== "match") return;
+    if (s.mode !== "match" || this.versus) return;
     if (s.phase === "finished") {
       this.clearMatchSave();
       return;
@@ -2899,6 +2986,7 @@ export class BaseballEngine {
     )
       return false;
     this.setAim(x, y);
+    if (this.versus?.mirror) return this.sendVersusPitch();
     // Pine tar: every pitch the umpire may notice something odd and check the ball.
     if (s.pineTar && s.mode === "match" && this.rng() < RULES.pineTarCatch) {
       this.ejectForPineTar();
@@ -2915,34 +3003,44 @@ export class BaseballEngine {
     const s = this.state,
       stats = this.playerStats,
       stage = this.stageRules,
-      machine = ai || auto,
+      // Versus: the rival's pitch as he chose it on his screen, with his own numbers.
+      vp = ai && this.versus ? this.versus.pitch : null,
+      machine = (ai || auto) && !vp,
       plan = auto ? this.autoPitchPlan() : null,
       pitch = plan
         ? plan.pitch
-        : machine
-          ? PITCHES[
-              Math.floor(
-                this.rng() *
-                  Math.min(PITCHES.length, stage.aiPitchKinds, this.awayRoster.ace.kinds + 2),
-              )
-            ]
-          : pitchData(s.selected);
-    const fatigue = ai
-      ? Math.max(0, s.pitchCount[0] - 25) * 0.18
-      : auto
-        ? Math.max(0, s.pitchCount[1] - 25) * 0.18
-        : 100 - s.energy;
-    const formPenalty = machine ? 0 : (100 - s.career.form) * 0.02;
+        : vp
+          ? pitchData(vp.pitch)
+          : machine
+            ? PITCHES[
+                Math.floor(
+                  this.rng() *
+                    Math.min(PITCHES.length, stage.aiPitchKinds, this.awayRoster.ace.kinds + 2),
+                )
+              ]
+            : pitchData(s.selected);
+    if (this.versus) {
+      this.versus.pitch = null;
+      this.versus.waited = 0;
+    }
+    const fatigue = vp
+      ? 100 - vp.energy
+      : ai
+        ? Math.max(0, s.pitchCount[0] - 25) * 0.18
+        : auto
+          ? Math.max(0, s.pitchCount[1] - 25) * 0.18
+          : 100 - s.energy;
+    const formPenalty = vp ? (100 - vp.form) * 0.02 : machine ? 0 : (100 - s.career.form) * 0.02;
     const speed = clamp(
       (machine
         ? stage.aiVelocity +
           this.awayRoster.ace.velocity +
           (auto ? RULES.autoPitchVelocity : 0) -
           (this.cheerActive && ai ? 3 : 0)
-        : fastballSpeed(stats.velocity)) +
+        : fastballSpeed(vp ? vp.velocity : stats.velocity)) +
         pitch.delta -
         fatigue * 0.065 -
-        (100 - s.effort) * 0.09 -
+        (100 - (vp ? vp.effort : s.effort)) * 0.09 -
         formPenalty -
         (this.raining ? RULES.rainVelocity : 0) +
         gaussian(this.rng) * 0.9,
@@ -2952,15 +3050,19 @@ export class BaseballEngine {
     // Our own AI pitcher works the zone more (the rival's spread made walks and hit batters).
     const aim = plan
       ? plan.aim
-      : machine
-        ? V(gaussian(this.rng) * 0.29, 0.95 + gaussian(this.rng) * 0.34, 0)
-        : { ...s.aim };
+      : vp
+        ? V(vp.aim.x, vp.aim.y, 0)
+        : machine
+          ? V(gaussian(this.rng) * 0.29, 0.95 + gaussian(this.rng) * 0.34, 0)
+          : { ...s.aim };
     const sigma =
       (machine
         ? 0.04 *
           this.awayRoster.ace.control *
           (auto ? RULES.autoPitchControl : this.cheerActive ? 1.08 : 1)
-        : controlSpread(stats.control, s.energy, s.effort, s.career.form)) *
+        : vp
+          ? controlSpread(vp.control, vp.energy, vp.effort, vp.form)
+          : controlSpread(stats.control, s.energy, s.effort, s.career.form)) *
       pitch.control *
       (this.raining ? RULES.rainControl : 1);
     const target = V(
@@ -2975,7 +3077,7 @@ export class BaseballEngine {
       s.mode === "match" &&
       s.bases.some(Boolean) &&
       this.rng() <
-        wildPitchChance(machine ? 100 - fatigue : s.energy, pitch.wild) *
+        wildPitchChance(machine ? 100 - fatigue : vp ? vp.energy : s.energy, pitch.wild) *
           (this.raining ? RULES.rainWildPitch : 1);
     if (wild) {
       target.y = 0.09 + this.rng() * 0.12;
@@ -3000,7 +3102,7 @@ export class BaseballEngine {
       elapsed: 0,
       pitch: pitch.id,
       speed,
-      movement: auto ? RULES.autoPitchMovement : machine ? 65 : stats.movement,
+      movement: auto ? RULES.autoPitchMovement : vp ? vp.movement : machine ? 65 : stats.movement,
       swung: false,
       swingTime: 0,
       batAim: { ...s.aim },
@@ -3080,7 +3182,25 @@ export class BaseballEngine {
     if (s.paused) return;
     dt = Math.min(0.05, Math.max(0, dt));
     this.emitClock += dt;
-    if (s.phase === "ready" && this.batting) {
+    if (this.versus?.mirror) {
+      this.mirrorTick(dt);
+    } else if (s.phase === "ready" && this.batting && this.versus) {
+      // Versus, at bat: the rival pitcher throws when he has chosen (an AI pitch if he takes
+      // longer than RULES.versusPitchWait).
+      const v = this.versus;
+      s.timer -= dt;
+      if (s.timer <= 0) {
+        if (v.pitch) this.launch(true);
+        else {
+          v.waited += dt;
+          if (v.waited > RULES.versusPitchWait) this.launch(true);
+          else if (s.detail !== "상대 투수가 공을 고르는 중…") {
+            s.detail = "상대 투수가 공을 고르는 중…";
+            this.emit();
+          }
+        }
+      }
+    } else if (s.phase === "ready" && this.batting) {
       s.timer -= dt;
       if (s.timer <= 0) this.launch(true);
     } else if (s.phase === "ready" && this.autoHalf) {
@@ -3518,7 +3638,8 @@ export class BaseballEngine {
   }
   intentionalWalk() {
     const s = this.state;
-    if (s.mode !== "match" || this.batting || s.phase !== "ready" || s.paused) return false;
+    if (this.versus || s.mode !== "match" || this.batting || s.phase !== "ready" || s.paused)
+      return false;
     this.walk();
     this.result("INTENTIONAL WALK", "고의4구 · 강제 진루 적용");
     return true;
@@ -4397,6 +4518,7 @@ export class BaseballEngine {
   }
   /** The career's hall-of-fame board is the easiest difficulty it ever played a match on. */
   private markDifficulty() {
+    if (this.versus) return;
     const s = this.state,
       c = s.career;
     c.minDifficulty = isDifficulty(c.minDifficulty)
@@ -5943,6 +6065,7 @@ export class BaseballEngine {
   pickoff(base: number) {
     const s = this.state;
     if (
+      this.versus ||
       s.mode !== "match" ||
       this.batting ||
       s.phase !== "ready" ||
@@ -6033,6 +6156,18 @@ export class BaseballEngine {
       this.ready();
       return;
     }
+    if (this.versus) {
+      // Versus: the half ends on three outs, or on a walk-off (the home side ahead in the last
+      // inning). The multiplayer code then hands the bat over or ends the match.
+      const walkOff = this.versus.home && s.inning >= s.maxInnings && s.score[1] > s.score[0];
+      if (s.outs >= 3 || walkOff) {
+        s.phase = "between";
+        s.message = walkOff ? "끝내기!" : "공수 교대";
+        s.detail = "잠시만요…";
+        this.emit();
+      } else this.ready();
+      return;
+    }
     if (s.inning >= s.maxInnings && s.half === "bottom" && s.score[1] > s.score[0]) {
       this.finish();
       return;
@@ -6090,7 +6225,7 @@ export class BaseballEngine {
   }
   continueInning() {
     const s = this.state;
-    if (s.phase !== "between") return;
+    if (s.phase !== "between" || this.versus) return;
     if (s.coin?.result === "cancel") {
       this.rainout();
       return;
@@ -6119,6 +6254,10 @@ export class BaseballEngine {
     this.finish();
   }
   private finish() {
+    if (this.versus) {
+      this.versusFinish();
+      return;
+    }
     const s = this.state;
     s.phase = "finished";
     const ejected = s.ejected;
@@ -6243,6 +6382,210 @@ export class BaseballEngine {
       this.persist();
     }
     this.emit();
+  }
+  /** Versus: what this player brings to a match (lineup in batting order, his numbers). */
+  teamSheet(): TeamSheet {
+    const c = this.state.career;
+    return {
+      team: matchTeams(c)[1],
+      player: c.name || "선수",
+      playerId: c.hofId,
+      stats: { ...c.stats },
+      pitches: [...c.pitches],
+      lineup: Array.from({ length: 9 }, (_, i) => {
+        const p = this.ourRunner(i);
+        return { ...p, name: i === this.battingOrder.indexOf(0) ? c.name || "선수" : p.name };
+      }),
+    };
+  }
+  /**
+   * Starts a versus match against `sheet` (home: this player bats second, in the "bottom"
+   * halves). The multiplayer code then calls versusTurn for the first half.
+   */
+  beginVersus(o: {
+    home: boolean;
+    sheet: TeamSheet;
+    innings: number;
+    onThrow: (p: RemotePitch) => void;
+  }) {
+    const saved = JSON.stringify(this.state.career);
+    this.versus = null;
+    this.start("match", o.innings);
+    const s = this.state;
+    s.weather = "clear";
+    s.rainOn = false;
+    s.energy = 100;
+    s.pineTar = false;
+    const lineup = o.sheet.lineup.slice(0, 9);
+    this.versus = {
+      home: o.home,
+      mirror: true,
+      sheet: o.sheet,
+      roster: {
+        name: o.sheet.team,
+        style: "",
+        lineup,
+        ace: { name: o.sheet.player, hand: "R", velocity: 0, control: 1, kinds: 4 },
+      },
+      pitch: null,
+      waited: 0,
+      sent: false,
+      saved,
+      onThrow: o.onThrow,
+      result: null,
+    };
+    s.log = [`멀티 대결 · ${this.teams[1]} vs ${this.teams[0]}`];
+    this.emit();
+  }
+  /** Versus: a new half. `batting`: this browser bats (and runs the rules) now. */
+  versusTurn(batting: boolean, inning: number) {
+    const v = this.versus,
+      s = this.state;
+    if (!v) return;
+    v.mirror = !batting;
+    v.pitch = null;
+    v.sent = false;
+    v.waited = 0;
+    s.inning = inning;
+    s.half = batting ? "bottom" : "top";
+    s.bases = [false, false, false];
+    s.outs = 0;
+    s.balls = 0;
+    s.strikes = 0;
+    s.pickoffs = 0;
+    s.coin = null;
+    s.stealCall = false;
+    if (s.autoCamera) s.camera = batting ? "catcher" : "pitcher";
+    this.ready();
+    if (!batting) {
+      s.message = "투수 차례";
+      s.detail = "구종을 고르고 목표 지점을 클릭하면 상대 화면에서 공이 날아갑니다";
+    }
+    this.emit();
+  }
+  /** Versus (batter's side): the state the pitcher's screen needs. */
+  versusSnapshot(): VersusSnap {
+    const s = this.state as unknown as Record<string, unknown>;
+    return Object.fromEntries(VERSUS_FIELDS.map((k) => [k, s[k]])) as VersusSnap;
+  }
+  /**
+   * Versus (pitcher's side): shows the batter's snapshot from this side (scores and orders
+   * swapped, colors of good/bad swapped). `lag` (s): how late it arrived; a pitch on its way
+   * is moved on by that much so both screens show it at the same moment.
+   */
+  applyVersusSnapshot(snap: VersusSnap, lag = 0) {
+    const v = this.versus,
+      s = this.state as unknown as Record<string, unknown>;
+    if (!v || !v.mirror) return;
+    for (const k of VERSUS_FIELDS) {
+      if (!(k in snap)) continue;
+      const val = snap[k];
+      s[k] = PAIRED.has(k) && Array.isArray(val) ? [val[1], val[0]] : val;
+    }
+    const st = this.state;
+    st.half = "top";
+    st.resultTone = flipTone(st.resultTone) as string;
+    if (st.flash) st.flash = { ...st.flash, tone: flipTone(st.flash.tone) as string };
+    if (st.phase !== "ready") v.sent = false;
+    if (lag > 0 && st.phase === "windup") {
+      st.timer -= lag;
+      if (st.timer <= 0 && st.flight) {
+        st.flight.elapsed = -st.timer;
+        st.phase = "flight";
+      }
+    } else if (lag > 0 && st.phase === "flight" && st.flight) st.flight.elapsed += lag;
+    if (st.phase === "flight" && st.flight)
+      st.ball = this.pitchPosition(clamp(st.flight.elapsed / st.flight.visualDuration, 0, 1));
+    this.emit();
+  }
+  /** Versus (pitcher's side): the clock runs the pitch on screen; the batter's side decides. */
+  private mirrorTick(dt: number) {
+    const s = this.state,
+      v = this.versus!;
+    if (v.sent) {
+      v.waited += dt;
+      // The pitch never arrived (or never came back): the pitcher may throw again.
+      if (v.waited > 4) {
+        v.sent = false;
+        v.waited = 0;
+      }
+    }
+    if (s.phase === "windup") {
+      s.timer -= dt;
+      if (s.timer <= 0) {
+        s.phase = "flight";
+        this.sound("pitch");
+      }
+    } else if (s.phase === "flight" && s.flight) {
+      const f = s.flight;
+      f.elapsed = Math.min(f.elapsed + dt, f.visualDuration);
+      s.ball = this.pitchPosition(clamp(f.elapsed / f.visualDuration, 0, 1));
+    } else if (s.phase === "result") s.timer -= dt;
+    if (this.emitClock > 0.05) {
+      this.emitClock = 0;
+      this.emit();
+    }
+  }
+  /** Versus (pitcher's side): the click on the zone sends the pitch to the batter's screen. */
+  private sendVersusPitch() {
+    const s = this.state,
+      v = this.versus!;
+    if (v.sent || !v.onThrow) return false;
+    const st = this.playerStats,
+      p = pitchData(s.selected);
+    v.sent = true;
+    v.waited = 0;
+    v.onThrow({
+      pitch: p.id,
+      aim: { x: s.aim.x, y: s.aim.y },
+      velocity: st.velocity,
+      control: st.control,
+      movement: st.movement,
+      energy: s.energy,
+      effort: s.effort,
+      form: s.career.form,
+    });
+    s.energy = clamp(s.energy - pitchEnergyCost(s.effort, st.stamina) * p.stamina, 0, 100);
+    s.message = "투구!";
+    s.detail = `${p.name} · 타자 화면으로 날아가는 중`;
+    this.sound("wind");
+    this.emit();
+    return true;
+  }
+  /** Versus: the match is over (reason: it ended early, e.g. the other player left). */
+  versusFinish(reason?: string) {
+    const v = this.versus,
+      s = this.state;
+    if (!v) return;
+    s.phase = "finished";
+    s.flight = null;
+    s.live = null;
+    const mine = s.score[1],
+      theirs = s.score[0];
+    v.result = { mine, theirs, reason };
+    s.message = reason
+      ? "경기 중단"
+      : mine > theirs
+        ? "VICTORY"
+        : mine === theirs
+          ? "DRAW"
+          : "GAME OVER";
+    s.detail = reason
+      ? `${reason} · ${this.teams[1]} ${mine} : ${theirs} ${this.teams[0]}`
+      : `멀티 대결 · ${this.teams[1]} ${mine} : ${theirs} ${this.teams[0]}`;
+    this.emit();
+  }
+  /** Leaves versus play: the career is exactly as before, a new single-player match is set. */
+  endVersus() {
+    const v = this.versus;
+    if (!v) return;
+    this.versus = null;
+    try {
+      this.state.career = JSON.parse(v.saved) as Career;
+    } catch {
+      /* keep the one in memory */
+    }
+    this.start("match");
   }
   resetPitch() {
     const s = this.state;
@@ -6569,6 +6912,7 @@ export class BaseballEngine {
   }
   /** The player's role (career creation, fixed). Older careers pitch and bat. */
   get role(): Role {
+    if (this.versus) return "two-way";
     const r = this.state.career.role;
     return r === "pitcher" || r === "batter" ? r : "two-way";
   }
@@ -6611,7 +6955,13 @@ export class BaseballEngine {
   /** T: our cheerleaders and fans rattle the rivals for one inning. Once per match, pros only. */
   cheer() {
     const s = this.state;
-    if (s.mode !== "match" || s.career.stage !== "pro" || s.cheerUsed || s.phase === "finished")
+    if (
+      this.versus ||
+      s.mode !== "match" ||
+      s.career.stage !== "pro" ||
+      s.cheerUsed ||
+      s.phase === "finished"
+    )
       return false;
     s.cheerUsed = true;
     s.cheerInning = s.inning;
@@ -6627,6 +6977,7 @@ export class BaseballEngine {
   limitBreak() {
     const s = this.state;
     if (
+      this.versus ||
       s.mode !== "match" ||
       // Only for a pitch or swing of the player's own (not while the AI plays this half).
       this.autoHalf ||
@@ -6654,6 +7005,7 @@ export class BaseballEngine {
   applyPineTar() {
     const s = this.state;
     if (
+      this.versus ||
       !s.career.pineTar ||
       s.mode !== "match" ||
       s.pineTar ||

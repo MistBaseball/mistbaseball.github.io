@@ -1,8 +1,9 @@
 /**
  * How two browsers talk in a room. A message is {e: event, from: sender id, d: data}.
  *  - supabaseTransport: Supabase Realtime Broadcast on the channel `dr-room-CODE` (the same
- *    project as the hall of fame; `self: true` so the sender gets its own message back, which
- *    is how a player measures his own ping to the server).
+ *    project as the hall of fame). Messages are acknowledged by the server (`ack: true`); an
+ *    `echo` comes back to its sender when the server's ack arrives, which is how a player
+ *    measures his own ping (bigger messages are not sent back, to save the connection).
  *  - localTransport: BroadcastChannel between tabs of one browser, with a simulated ping.
  *    For testing only (`?mp=local&lag=60`), no server involved.
  */
@@ -31,7 +32,7 @@ export const supabaseTransport: TransportFactory = (code, h) => {
     client = new RealtimeClient(`${HOF_URL.replace(/^http/, "ws")}/realtime/v1`, {
       params: { apikey: HOF_KEY },
     });
-    chan = client.channel(topic(code), { config: { broadcast: { self: true, ack: false } } });
+    chan = client.channel(topic(code), { config: { broadcast: { self: false, ack: true } } });
     chan.on("broadcast", { event: "m" }, (ev: { payload?: unknown }) => {
       const m = ev.payload as Msg | undefined;
       if (m && typeof m.e === "string" && typeof m.from === "string") h.onMessage(m);
@@ -45,7 +46,12 @@ export const supabaseTransport: TransportFactory = (code, h) => {
   })().catch(() => h.onStatus("error"));
   return {
     send(m) {
-      if (chan) void chan.send({ type: "broadcast", event: "m", payload: m });
+      if (!chan) return;
+      const sent = chan.send({ type: "broadcast", event: "m", payload: m });
+      if (m.e === "echo")
+        void sent.then((r: string) => {
+          if (r === "ok" && !closed) h.onMessage(m);
+        });
     },
     close() {
       closed = true;
@@ -78,8 +84,8 @@ export const localTransport =
     return {
       send(m) {
         bc.postMessage({ m, lag });
-        // The sender's own copy comes back after a full round trip (self echo).
-        later(lag, () => h.onMessage(m));
+        // An echo comes back to the sender after a full round trip (like the server's ack).
+        if (m.e === "echo") later(lag, () => h.onMessage(m));
       },
       close() {
         closed = true;

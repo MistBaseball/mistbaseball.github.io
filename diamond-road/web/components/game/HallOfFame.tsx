@@ -34,6 +34,7 @@ import {
   type HofProfile,
   type HofRow,
 } from "@/lib/hall-of-fame";
+import { RIVAL_LEAGUE, fetchRivals, winRate, type RivalRow } from "@/lib/multi/rivals";
 
 type Sync = "idle" | "sending" | "ok" | "fail";
 /** How often an open hall of fame asks for the boards again. */
@@ -50,11 +51,16 @@ export function HallOfFameButton({ engine, career }: { engine: BaseballEngine; c
       () => BOARDS.find((b) => b.id === (career.minDifficulty ?? "normal")) ?? BOARDS[2],
     ),
     [rows, setRows] = useState<HofRow[] | null>(null),
-    [error, setError] = useState<false | "old" | "net">(false);
+    [error, setError] = useState<false | "old" | "net">(false),
+    // The 라이벌 리그 tab (versus wins and losses) instead of a difficulty board.
+    [rival, setRival] = useState(false),
+    [rivals, setRivals] = useState<RivalRow[] | null>(null),
+    [rivalError, setRivalError] = useState<false | "none" | "net">(false);
 
   // Opening the window shows this career's own board (the easiest difficulty it played).
   useEffect(() => {
-    if (open) setBoard(BOARDS.find((b) => b.id === (career.minDifficulty ?? "normal")) ?? BOARDS[2]);
+    if (open)
+      setBoard(BOARDS.find((b) => b.id === (career.minDifficulty ?? "normal")) ?? BOARDS[2]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   // Another career (loaded with a save code, or a new one): its own nickname#tag.
@@ -121,6 +127,33 @@ export function HallOfFameButton({ engine, career }: { engine: BaseballEngine; c
       window.clearInterval(timer);
     };
   }, [open, board, sync]);
+
+  useEffect(() => {
+    if (!open || !rival || !hofConfigured()) return;
+    let alive = true,
+      shown = false;
+    setRivals(null);
+    setRivalError(false);
+    const pull = () =>
+      fetchRivals()
+        .then((r) => {
+          if (!alive) return;
+          shown = true;
+          setRivals(r);
+          setRivalError(false);
+        })
+        .catch(
+          (e: Error) => alive && !shown && setRivalError(e.message === "no-table" ? "none" : "net"),
+        );
+    void pull();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void pull();
+    }, LIVE_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [open, rival]);
 
   const register = () => {
     const p = saveProfile(draft, profile);
@@ -266,45 +299,62 @@ export function HallOfFameButton({ engine, career }: { engine: BaseballEngine; c
                   <button
                     key={b.id}
                     role="tab"
-                    aria-selected={b.id === board.id}
-                    className={b.id === board.id ? "on" : undefined}
-                    onClick={() => setBoard(b)}
+                    aria-selected={!rival && b.id === board.id}
+                    className={!rival && b.id === board.id ? "on" : undefined}
+                    onClick={() => {
+                      setRival(false);
+                      setBoard(b);
+                    }}
                   >
                     {b.label}
                   </button>
                 ))}
+                <button
+                  role="tab"
+                  aria-selected={rival}
+                  className={`rival-tab ${rival ? "on" : ""}`}
+                  onClick={() => setRival(true)}
+                >
+                  ⚔️ {RIVAL_LEAGUE}
+                </button>
               </div>
-              <p className="hof-rule">
-                난이도별 랭킹 · 경기를 한 가장 쉬운 난이도에 기록돼요. {SCORE_RULE}
-              </p>
-              {error === "old" ? (
-                <p className="hof-note">
-                  랭킹 서버 업데이트가 필요해요 (관리자: setup.sql 다시 실행).
-                </p>
-              ) : error ? (
-                <p className="hof-note">랭킹을 불러오지 못했어요. 10초 뒤 다시 시도해요.</p>
-              ) : !rows ? (
-                <p className="hof-note">불러오는 중…</p>
-              ) : rows.length === 0 ? (
-                <p className="hof-note">아직 기록이 없어요. 첫 번째 주인공이 되어 보세요!</p>
+              {rival ? (
+                <RivalBoard rows={rivals} error={rivalError} mine={mine} />
               ) : (
-                <ol className="hof-list">
-                  {rows.map((r, i) => (
-                    <li key={r.player_id} className={r.player_id === mine ? "mine" : undefined}>
-                      <span className={`hof-rank r${i + 1}`}>{i + 1}</span>
-                      <span className="hof-name">
-                        {displayName(r)}
-                        {r.dev && <em className="hof-dev">개발자(버그 찾는 중)</em>}
-                        {r.dishonor && <em className="hof-dishonor">불명예</em>}
-                        <small>
-                          {r.team} · {TIER_LABEL[r.tier]} · {ROLE_LABEL[r.role ?? "two-way"]} ·{" "}
-                          {r.games}경기 {r.wins}승 · K {r.strikeouts} · 안타 {r.hits}
-                        </small>
-                      </span>
-                      <b>{board.value(r)}</b>
-                    </li>
-                  ))}
-                </ol>
+                <>
+                  <p className="hof-rule">
+                    난이도별 랭킹 · 경기를 한 가장 쉬운 난이도에 기록돼요. {SCORE_RULE}
+                  </p>
+                  {error === "old" ? (
+                    <p className="hof-note">
+                      랭킹 서버 업데이트가 필요해요 (관리자: setup.sql 다시 실행).
+                    </p>
+                  ) : error ? (
+                    <p className="hof-note">랭킹을 불러오지 못했어요. 10초 뒤 다시 시도해요.</p>
+                  ) : !rows ? (
+                    <p className="hof-note">불러오는 중…</p>
+                  ) : rows.length === 0 ? (
+                    <p className="hof-note">아직 기록이 없어요. 첫 번째 주인공이 되어 보세요!</p>
+                  ) : (
+                    <ol className="hof-list">
+                      {rows.map((r, i) => (
+                        <li key={r.player_id} className={r.player_id === mine ? "mine" : undefined}>
+                          <span className={`hof-rank r${i + 1}`}>{i + 1}</span>
+                          <span className="hof-name">
+                            {displayName(r)}
+                            {r.dev && <em className="hof-dev">개발자(버그 찾는 중)</em>}
+                            {r.dishonor && <em className="hof-dishonor">불명예</em>}
+                            <small>
+                              {r.team} · {TIER_LABEL[r.tier]} · {ROLE_LABEL[r.role ?? "two-way"]} ·{" "}
+                              {r.games}경기 {r.wins}승 · K {r.strikeouts} · 안타 {r.hits}
+                            </small>
+                          </span>
+                          <b>{board.value(r)}</b>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </>
               )}
             </section>
           )}
@@ -314,6 +364,52 @@ export function HallOfFameButton({ engine, career }: { engine: BaseballEngine; c
           </p>
         </DialogContent>
       </Dialog>
+    </>
+  );
+}
+
+/** 라이벌 리그: multiplayer wins and losses (most wins first). */
+function RivalBoard({
+  rows,
+  error,
+  mine,
+}: {
+  rows: RivalRow[] | null;
+  error: false | "none" | "net";
+  mine: string | null;
+}) {
+  return (
+    <>
+      <p className="hof-rule">
+        멀티 대결 승·패 순위 · 두 사람이 모두 같은 결과를 보고한 경기만 올라가요(끊기거나 중간에
+        나간 경기는 기록 없음).
+      </p>
+      {error === "none" ? (
+        <p className="hof-note">라이벌 리그 서버 준비 중이에요 (관리자: versus.sql 실행).</p>
+      ) : error ? (
+        <p className="hof-note">순위를 불러오지 못했어요. 10초 뒤 다시 시도해요.</p>
+      ) : !rows ? (
+        <p className="hof-note">불러오는 중…</p>
+      ) : rows.length === 0 ? (
+        <p className="hof-note">아직 대결 기록이 없어요. 멀티에서 친구에게 도전해 보세요!</p>
+      ) : (
+        <ol className="hof-list">
+          {rows.map((r, i) => (
+            <li key={r.player_id} className={r.player_id === mine ? "mine" : undefined}>
+              <span className={`hof-rank r${i + 1}`}>{i + 1}</span>
+              <span className="hof-name">
+                {displayName(r)}
+                <small>
+                  {r.wins + r.losses + r.draws}전 · 승률 {Math.round(winRate(r) * 100)}%
+                </small>
+              </span>
+              <b>
+                {r.wins}승 {r.losses}패{r.draws ? ` ${r.draws}무` : ""}
+              </b>
+            </li>
+          ))}
+        </ol>
+      )}
     </>
   );
 }
