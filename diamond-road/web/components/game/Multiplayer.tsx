@@ -77,10 +77,8 @@ export function MultiButton({
             <DialogTitle>멀티플레이 (베타)</DialogTitle>
             <DialogDescription>
               친구와 1:1 대결(3이닝, 난이도 보통 고정). 한 명이 던지면 한 명이 치고, 이닝마다 공수를
-              바꿉니다. 수비는 AI가 맡아요. 리그가 다르면 둘 다 낮은 리그의 최고 능력치(고교 100 ·
-              프로 200 · MLB 250)까지만 써요. 내 명예의 전당 난이도에는 영향이 없어요. 결과는 명예의
-              전당 「{RIVAL_LEAGUE}」에 승·패로 기록됩니다(두 사람 모두 명예의 전당 닉네임이 있을
-              때).
+              바꿉니다. 수비는 AI가 맡아요. 나와 상대는 각자 자기 능력치 그대로, 팀 동료들은 두 팀의
+              평균에 맞춰져요. 내 명예의 전당 난이도에는 영향이 없어요.
             </DialogDescription>
           </DialogHeader>
           {!multiAvailable() ? (
@@ -321,7 +319,7 @@ export function VersusOverlay({
   return (
     <div className="game-overlay">
       <span className="eyebrow">
-        멀티 대결 · {engine.teams[1]} vs {engine.teams[0]} · 능력치 상한 {engine.versus?.cap}
+        멀티 대결 · {engine.teams[1]} vs {engine.teams[0]}
       </span>
       <h2>{s.message}</h2>
       <p>{s.detail}</p>

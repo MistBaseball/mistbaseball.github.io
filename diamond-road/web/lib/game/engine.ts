@@ -2092,18 +2092,32 @@ export type VersusState = {
   saved: string;
   onThrow: ((p: RemotePitch) => void) | null;
   result: { mine: number; theirs: number; reason?: string } | null;
-  /** Stat cap for both players: the top of the lower of the two leagues. */
-  cap: number;
+  /** Our eight teammates (member 1–8; 0 unused) evened with the rival's (versus). */
+  mates: Player[];
   /** This browser's difficulty before the match (versus is always "normal"). */
   difficulty: Difficulty;
 };
-/** Top stat of each league for versus matching (high school 100, pros 200, majors 250). */
-export const versusCap = (t: Tier | undefined) =>
-  t === "mlb"
-    ? LIMITLESS_CAP
-    : t === "farm" || t === "first"
-      ? STAGES.pro.statCap
-      : STAGES.high.statCap;
+/**
+ * Versus: both teams' teammates are evened out. Ratings go to the formula scale (pros mapped by
+ * proForm), then each team is shifted so its average equals the average of the two teams;
+ * players keep their differences inside the team. The two players themselves are untouched.
+ */
+export function evenTeams(a: Player[], b: Player[]): [Player[], Player[]] {
+  const keys = ["contact", "power", "eye", "speed"] as const,
+    plain = (l: Player[]) => l.map((p) => ({ ...formOf(p), pro: false })),
+    A = plain(a),
+    B = plain(b),
+    ra = teamRatings(A),
+    rb = teamRatings(B);
+  const shift = (l: Player[], own: Record<(typeof keys)[number], number>) =>
+    l.map((p) => {
+      const q = { ...p };
+      for (const k of keys)
+        q[k] = Math.round(clamp(p[k] + ((ra[k] + rb[k]) / 2 - own[k]), 20, 150));
+      return q;
+    });
+  return [shift(A, ra), shift(B, rb)];
+}
 /** What the batter's browser sends to the pitcher's (its own side's view). */
 export const VERSUS_FIELDS = [
   "phase",
@@ -2135,7 +2149,11 @@ export const VERSUS_FIELDS = [
   "hbp",
   "lastResult",
 ] as const;
-export type VersusSnap = Partial<Record<(typeof VERSUS_FIELDS)[number], unknown>>;
+export type VersusSnap = Partial<Record<(typeof VERSUS_FIELDS)[number], unknown>> & {
+  /** Which pitch / which play this is (the same one keeps its number across snapshots). */
+  _flight?: number;
+  _live?: number;
+};
 const PAIRED = new Set(["score", "lines", "hits", "errors", "order", "pitchCount"]);
 const flipTone = (t: unknown) => (t === "gold" ? "red" : t === "red" ? "gold" : t);
 
@@ -2452,6 +2470,8 @@ export class BaseballEngine {
   member(k: number): Player {
     const c = this.state.career,
       i = k;
+    // Versus: teammates evened with the rival's (the player himself is himself).
+    if (this.versus && i % 9 !== 0) return this.versus.mates[i % 9];
     let p = this.homeRoster.lineup[i % 9];
     // A pitch-only player does not bat: a designated hitter (the team's average bat) does.
     if (i % 9 === 0 && this.role === "pitcher") {
@@ -3019,13 +3039,7 @@ export class BaseballEngine {
       stats = this.playerStats,
       stage = this.stageRules,
       // Versus: the rival's pitch as he chose it on his screen, with his own numbers.
-      vp0 = ai && this.versus ? this.versus.pitch : null,
-      vp = vp0 && {
-        ...vp0,
-        velocity: Math.min(vp0.velocity, this.versus!.cap),
-        control: Math.min(vp0.control, this.versus!.cap),
-        movement: Math.min(vp0.movement, this.versus!.cap),
-      },
+      vp = ai && this.versus ? this.versus.pitch : null,
       machine = (ai || auto) && !vp,
       plan = auto ? this.autoPitchPlan() : null,
       pitch = plan
@@ -6432,10 +6446,10 @@ export class BaseballEngine {
     onThrow: (p: RemotePitch) => void;
   }) {
     const saved = JSON.stringify(this.state.career),
-      difficulty = this.versus?.difficulty ?? this.state.difficulty,
-      // League matching: both play with the stat cap of the lower league.
-      cap = Math.min(versusCap(tierOf(this.state.career)), versusCap(o.sheet.tier));
+      difficulty = this.versus?.difficulty ?? this.state.difficulty;
     this.versus = null;
+    // Our teammates as they are now (members 1–8), before versus takes over the rosters.
+    const ours = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => this.member(k));
     this.start("match", o.innings);
     const s = this.state;
     // Versus is always on normal (not saved, so the hall-of-fame board is not touched).
@@ -6445,14 +6459,13 @@ export class BaseballEngine {
     s.energy = 100;
     s.pineTar = false;
     const slot = o.sheet.slot ?? -1,
-      lim = (v: number) => Math.min(v, cap),
-      lineup = o.sheet.lineup
-        .slice(0, 9)
-        .map((p, i) =>
-          i === slot
-            ? { ...p, contact: lim(p.contact), power: lim(p.power), speed: lim(p.speed) }
-            : p,
-        );
+      theirs = o.sheet.lineup.slice(0, 9),
+      [mine, evened] = evenTeams(
+        ours,
+        theirs.filter((_, i) => i !== slot),
+      );
+    let n = 0;
+    const lineup = theirs.map((p, i) => (i === slot ? p : evened[n++]));
     this.versus = {
       home: o.home,
       mirror: true,
@@ -6469,7 +6482,7 @@ export class BaseballEngine {
       saved,
       onThrow: o.onThrow,
       result: null,
-      cap,
+      mates: [ours[0], ...mine],
       difficulty,
     };
     s.log = [`멀티 대결 · ${this.teams[1]} vs ${this.teams[0]}`];
@@ -6503,9 +6516,21 @@ export class BaseballEngine {
   }
   /** Versus (batter's side): the state the pitcher's screen needs. */
   versusSnapshot(): VersusSnap {
-    const s = this.state as unknown as Record<string, unknown>;
-    return Object.fromEntries(VERSUS_FIELDS.map((k) => [k, s[k]])) as VersusSnap;
+    const s = this.state as unknown as Record<string, unknown>,
+      snap = Object.fromEntries(VERSUS_FIELDS.map((k) => [k, s[k]])) as VersusSnap;
+    snap._flight = this.state.flight ? this.objectId(this.state.flight) : undefined;
+    snap._live = this.state.live ? this.objectId(this.state.live) : undefined;
+    return snap;
   }
+  private ids = new WeakMap<object, number>();
+  private nextId = 1;
+  private objectId(o: object) {
+    let id = this.ids.get(o);
+    if (id === undefined) this.ids.set(o, (id = this.nextId++));
+    return id;
+  }
+  /** Mirror side: the pitch / play now shown and its number (kept as the same object). */
+  private shown: { flight?: number; live?: number } = {};
   /**
    * Versus (pitcher's side): shows the batter's snapshot from this side (scores and orders
    * swapped, colors of good/bad swapped). `lag` (s): how late it arrived; a pitch on its way
@@ -6518,6 +6543,18 @@ export class BaseballEngine {
     for (const k of VERSUS_FIELDS) {
       if (!(k in snap)) continue;
       const val = snap[k];
+      if ((k === "flight" || k === "live") && val && s[k]) {
+        // The same pitch or play as before: update it in place. The 3D view tells a new
+        // pitch (swing animation) or play (replay tape) by the object, so a fresh copy every
+        // snapshot restarted the batter's swing over and over.
+        const id = k === "flight" ? snap._flight : snap._live;
+        if (id !== undefined && this.shown[k] === id) {
+          Object.assign(s[k] as object, val);
+          continue;
+        }
+      }
+      if (k === "flight") this.shown.flight = snap._flight;
+      if (k === "live") this.shown.live = snap._live;
       s[k] = PAIRED.has(k) && Array.isArray(val) ? [val[1], val[0]] : val;
     }
     const st = this.state;
@@ -6976,13 +7013,6 @@ export class BaseballEngine {
             movement: st0.movement + PINE_TAR_BOOST,
           }
         : st0;
-    // Versus: capped at the lower league's top.
-    if (this.versus) {
-      const cap = this.versus.cap;
-      return Object.fromEntries(
-        Object.entries(st).map(([k, v]) => [k, Math.min(v, cap)]),
-      ) as Career["stats"];
-    }
     if (!this.limitActive) return st;
     return Object.fromEntries(Object.keys(st).map((k) => [k, LIMIT_BREAK])) as Career["stats"];
   }

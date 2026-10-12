@@ -3648,10 +3648,11 @@ check("Versus: two engines play a whole match over a laggy network; scores agree
   };
   const hc = player("방장", 1),
     gc = player("손님", 2);
-  // The host is a pro with pro-scale stats, the guest a high-schooler: both play capped at 100.
+  // The host is a pro with pro-scale stats and pro teammates, the guest a high-schooler.
   Object.assign(hc, { stage: "pro", club: "triples", proUnlocked: true });
   for (const k of Object.keys(hc.stats)) hc.stats[k] = 150;
   hc.minDifficulty = "impossible";
+  hc.proGoal = true; // a pro first team (ratings far above high school)
   const before = [JSON.stringify(hc), JSON.stringify(gc)];
   const he = new BaseballEngine(hc, seed(21)),
     ge = new BaseballEngine(gc, seed(22));
@@ -3675,10 +3676,16 @@ check("Versus: two engines play a whole match over a laggy network; scores agree
   assert.equal(ge.versus.mirror, false, "the guest bats first and runs the rules");
   assert.equal(he.versus.mirror, true);
   assert.equal(he.teams[0], ge.teams[1], "each sees the other's team");
-  assert.deepEqual([he.versus.cap, ge.versus.cap], [100, 100], "the lower league's cap for both");
-  assert(Object.values(he.playerStats).every((v) => v <= 100), "the pro plays at most 100");
+  // Each player keeps his own stats; the teammates of both teams are evened to one average.
+  assert.equal(he.playerStats.contact, 150, "the pro keeps his own stats");
   const slot = he.teamSheet().slot;
-  assert.equal(ge.versus.roster.lineup[slot].contact, 100, "and the guest sees him capped");
+  assert.equal(ge.versus.roster.lineup[slot].contact, 150, "and the guest faces them");
+  const mates = (e) => teamRatings([1, 2, 3, 4, 5, 6, 7, 8].map((k) => e.member(k))),
+    away = (e, sl) => teamRatings(e.versus.roster.lineup.filter((_, i) => i !== sl));
+  for (const k of ["contact", "power", "eye", "speed"]) {
+    assert(Math.abs(mates(he)[k] - mates(ge)[k]) <= 1, `${k}: both teams' mates even`);
+    assert(Math.abs(mates(he)[k] - away(ge, slot)[k]) <= 1, `${k}: the guest sees the same host mates`);
+  }
   assert.deepEqual([he.state.difficulty, ge.state.difficulty], ["normal", "normal"]);
   const rnd = seed(23);
   const bots = [he, ge].map(() => ({ swingAt: null, seen: null }));
@@ -3733,6 +3740,26 @@ check("Versus: two engines play a whole match over a laggy network; scores agree
   assert.equal(he.versus, null);
   assert.equal(he.state.difficulty, "impossible", "his own difficulty is back after the match");
   assert.deepEqual([JSON.stringify(he.state.career), JSON.stringify(ge.state.career)], before);
+  // The pitcher's screen keeps one object per pitch (a new copy every snapshot restarted the
+  // batter's swing animation).
+  {
+    const a = new BaseballEngine(player("가", 3), seed(30)),
+      m = new BaseballEngine(player("나", 4), seed(31));
+    a.beginVersus({ home: false, sheet: m.teamSheet(), innings: 3, onThrow: () => {} });
+    m.beginVersus({ home: true, sheet: a.teamSheet(), innings: 3, onThrow: () => {} });
+    a.versusTurn(true, 1);
+    m.versusTurn(false, 1);
+    a.versus.pitch = { pitch: "fastball", aim: { x: 0, y: 0.8 }, velocity: 60, control: 60, movement: 60, energy: 100, effort: 90, form: 70 };
+    for (let i = 0; i < 200 && a.state.phase !== "flight"; i++) a.tick(1 / 60);
+    const wire = () => JSON.parse(JSON.stringify(a.versusSnapshot()));
+    m.applyVersusSnapshot(wire());
+    const shown = m.state.flight;
+    a.tick(1 / 60);
+    a.state.flight.swung = true;
+    m.applyVersusSnapshot(wire());
+    assert.equal(m.state.flight, shown, "same pitch, same object");
+    assert.equal(m.state.flight.swung, true, "updated in place");
+  }
   // Blending snapshots: positions move in between, the rest is the newer one.
   assert.deepEqual(blend({ ball: { x: 0, y: 2 }, outs: 1 }, { ball: { x: 10, y: 4 }, outs: 2 }, 0.5), {
     ball: { x: 5, y: 3 },
