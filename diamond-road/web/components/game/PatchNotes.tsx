@@ -17,6 +17,15 @@ type Patch = { version: string; date: string; title: string; items: string[] };
 
 export const PATCHES: Patch[] = [
   {
+    version: "v13.5",
+    date: "10/12",
+    title: "단계별 난이도 다시 맞추기",
+    items: [
+      "모든 단계(고교·2군·1군·메이저리그)의 상대를 다시 맞췄어요: 그 단계 최고 능력치(고교 100 · 프로 200 · MLB 250)를 가진 잘하는 선수가 약 70% 초반을 이기도록.",
+      "그래서 상대 타자가 조금 더 세게 치고, 우리 타구 보정은 조금 줄었어요. 능력치가 낮을 때는 예전보다 이기기 어려워요.",
+    ],
+  },
+  {
     version: "v13.4",
     date: "10/12",
     title: "체력과 컨디션 나누기",

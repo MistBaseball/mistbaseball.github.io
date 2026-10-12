@@ -1221,10 +1221,12 @@ export const TIER_BALANCE: Record<Tier, { aiPower: number; batBoost: number }> =
   // more; the boost comes down 0.035 to keep normal near half the games.
   // v12.5: contact swings were trimmed (power made useful), +0.025 back for everyone so a
   // contact-only player still wins about half on normal.
-  high: { aiPower: 1.0, batBoost: -0.07 },
-  farm: { aiPower: 1.14, batBoost: 0.045 },
-  first: { aiPower: 1.04, batBoost: -0.002 },
-  mlb: { aiPower: 1.01, batBoost: 0.008 },
+  // v13.5: tuned on a GOOD player at each stage's top stats (100 / 200 / 200 / 250): he wins
+  // about 70–75% everywhere (scripts/tier-win.mjs, 120 matches a stage).
+  high: { aiPower: 0.95, batBoost: -0.11 },
+  farm: { aiPower: 0.89, batBoost: -0.08 },
+  first: { aiPower: 0.98, batBoost: -0.035 },
+  mlb: { aiPower: 0.9, batBoost: -0.045 },
 };
 const NEUTRAL_BALANCE = { aiPower: 1, batBoost: 0 };
 /** What the career gauge measures in this tier. */
