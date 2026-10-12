@@ -80,6 +80,7 @@ import {
 } from "../lib/game/hitbox.ts";
 import { randomSituation, runPlay, engineFor, lcg as aiSeed } from "../lib/ai/scenario.ts";
 import { applyLevel } from "../lib/ai/levels.ts";
+import { Room, ROOM, normalizeRoomCode, pingLevel } from "../lib/multi/room.ts";
 
 let passed = 0;
 const check = (name, fn) => {
@@ -3392,6 +3393,54 @@ check("Loading an account by code keeps its own difficulty (a new career made be
     globalThis.localStorage = had;
   }
 });
+check("A career whose hall-of-fame board was lowered by the old load bug is put back once", () => {
+  const store = new Map(),
+    had = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  try {
+    const victim = newCareer();
+    victim.created = true;
+    victim.name = "피해자";
+    victim.team = "triples";
+    victim.hofNick = "이트겔";
+    victim.hofTag = "1448";
+    victim.minDifficulty = "normal";
+    store.set("diamond-road-career-v1", JSON.stringify(victim));
+    store.set("diamond-road-difficulty", "normal");
+    const g = new BaseballEngine(newCareer(), seed(12));
+    assert(g.load());
+    assert.equal(g.state.career.minDifficulty, "impossible");
+    assert.equal(g.state.difficulty, "impossible", "and he plays on it, so it is not lowered again");
+    assert.equal(JSON.parse(store.get("diamond-road-career-v1")).boardRepaired, true, "saved");
+    // Once: if he later plays an easier match on purpose, the board follows the normal rule.
+    g.start("match");
+    g.state.pitchCount[1] = 1;
+    g.setDifficulty("easy");
+    assert.equal(g.state.career.minDifficulty, "easy");
+    g.persist();
+    const again = new BaseballEngine(newCareer(), seed(12));
+    assert(again.load());
+    assert.equal(again.state.career.minDifficulty, "easy", "not repaired a second time");
+    // Somebody else with a lowered board is not touched.
+    const other = newCareer();
+    other.created = true;
+    other.name = "다른사람";
+    other.team = "triples";
+    other.hofNick = "이트겔";
+    other.hofTag = "0001";
+    other.minDifficulty = "normal";
+    store.set("diamond-road-career-v1", JSON.stringify(other));
+    const h = new BaseballEngine(newCareer(), seed(12));
+    assert(h.load());
+    assert.equal(h.state.career.minDifficulty, "normal");
+  } finally {
+    globalThis.localStorage = had;
+  }
+});
 check("XP buys stats: price grows with the stat, caps and match lock hold, the dearest pitch takes about two days of XP", () => {
   assert.equal(statBuyCost(45), 42);
   assert(statBuyCost(80) > statBuyCost(45) && statBuyCost(200) > statBuyCost(100));
@@ -3425,6 +3474,135 @@ check("XP buys stats: price grows with the stat, caps and match lock hold, the d
     typicalMatch = XP.complete + XP.win * 0.5 + 60,
     day = typicalMatch + 5 * XP.training;
   assert(dearest / day > 1.7 && dearest / day < 2.6, `two days for ${dearest} XP (day ${day})`);
+});
+check("MLB teammates keep their own ratings (200–250) when the team grows; they were all squashed to 200", () => {
+  const c = newCareer();
+  c.created = true;
+  c.team = "triples";
+  c.stage = "pro";
+  c.club = "triples";
+  c.proGoal = true;
+  c.league = "mlb";
+  c.mlbClub = MLB_TEAMS[0].id;
+  const g = new BaseballEngine(c, seed(11));
+  g.start("match");
+  const plain = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => g.member(k));
+  assert(plain.some((p) => p.contact > 200 || p.power > 200), "MLB teammates are rated above 200");
+  c.teamBoost = 10;
+  const grown = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => g.member(k));
+  for (let i = 0; i < 8; i++)
+    for (const key of ["contact", "power", "eye", "speed"]) {
+      assert(grown[i][key] >= plain[i][key], `${key} of teammate ${i + 1} never drops`);
+      assert(grown[i][key] <= 250, "the majors cap is 250");
+    }
+  assert(grown.some((p) => p.contact > 200), "not all squashed to 200");
+});
+check("Multiplayer room: meeting by code, each side's ping, round trip and clock offset, third player, silence, leaving", () => {
+  // A tiny network: messages arrive after the senders' pings (server in the middle).
+  let T = 0;
+  const queue = [],
+    rooms = new Map();
+  const net = (ping) => (code, h) => {
+    const me = { h, ping, closed: false, blocked: false };
+    if (!rooms.has(code)) rooms.set(code, new Set());
+    rooms.get(code).add(me);
+    queue.push({ at: T, fn: () => h.onStatus("open") });
+    return {
+      send(m) {
+        if (me.blocked) return;
+        queue.push({ at: T + me.ping, fn: () => !me.closed && h.onMessage(m) }); // own copy
+        for (const o of rooms.get(code))
+          if (o !== me)
+            queue.push({
+              at: T + (me.ping + o.ping) / 2,
+              fn: () => !o.closed && !o.blocked && o.h.onMessage(m),
+            });
+      },
+      close() {
+        me.closed = true;
+      },
+      me,
+    };
+  };
+  const advance = (ms) => {
+    const end = T + ms;
+    for (;;) {
+      queue.sort((a, b) => a.at - b.at);
+      if (!queue.length || queue[0].at > end) break;
+      const e = queue.shift();
+      T = Math.max(T, e.at);
+      e.fn();
+    }
+    T = end;
+  };
+  assert.equal(normalizeRoomCode("k7qf2"), "K7QF2");
+  assert.equal(normalizeRoomCode("K7Q"), null);
+  assert.equal(normalizeRoomCode("O0I1L"), null, "look-alike letters are not in codes");
+  assert.deepEqual([pingLevel(null), pingLevel(60), pingLevel(120), pingLevel(300)], ["none", "good", "ok", "bad"]);
+  const SKEW = 5000; // the guest's clock runs 5 s ahead
+  let hostTx, guestTx;
+  const hostF = (c, h) => (hostTx = net(40)(c, h)),
+    guestF = (c, h) => (guestTx = net(90)(c, h));
+  const host = new Room("ABCD2", "host", "방장", hostF, () => T, false),
+    guest = new Room("ABCD2", "guest", "손님", guestF, () => T + SKEW, false);
+  advance(1);
+  assert.equal(host.state.status, "waiting".replace("waiting", host.state.peer ? "ready" : "waiting"));
+  advance(500);
+  assert.equal(host.state.status, "ready");
+  assert.equal(guest.state.status, "ready");
+  assert.equal(host.state.peer.name, "손님");
+  assert.equal(guest.state.peer.name, "방장");
+  // A few rounds of upkeep: pings, pong, clock offset.
+  for (let i = 0; i < 4; i++) {
+    host.tick();
+    guest.tick();
+    advance(ROOM.pingEvery);
+  }
+  assert.equal(host.state.ping, 40);
+  assert.equal(guest.state.ping, 90);
+  assert.equal(host.state.peer.ping, 90, "the host sees the guest's ping");
+  assert.equal(guest.state.peer.ping, 40, "the guest sees the host's ping");
+  assert.equal(host.state.peer.rtt, 130, "round trip between them: (40 + 90) / 2 each way");
+  assert(Math.abs(host.state.peer.offset - SKEW) < 1e-6, `offset ${host.state.peer.offset}`);
+  assert(Math.abs(guest.state.peer.offset + SKEW) < 1e-6);
+  // A third player is turned away and the pair stays.
+  const late = new Room("ABCD2", "guest", "셋째", net(30), () => T, false);
+  advance(1);
+  late.tick();
+  advance(200);
+  assert.equal(late.state.status, "full");
+  assert.equal(host.state.peer.name, "손님");
+  assert.equal(host.state.status, "ready");
+  // Events that are not the room's own reach the game code.
+  const got = [];
+  guest.onEvent = (m) => got.push([m.e, m.d.x]);
+  host.send("pitch", { x: 7 });
+  advance(200);
+  assert.deepEqual(got, [["pitch", 7]]);
+  // Silence: the host stops hearing the guest, then hears him again.
+  guestTx.me.blocked = true;
+  for (let i = 0; i < 6; i++) {
+    host.tick();
+    advance(ROOM.pingEvery);
+  }
+  assert.equal(host.state.status, "lost");
+  guestTx.me.blocked = false;
+  guest.tick();
+  advance(300);
+  assert.equal(host.state.status, "ready");
+  // Leaving: the host is alone again and can take another guest.
+  guest.leave();
+  advance(300);
+  assert.equal(host.state.status, "waiting");
+  assert.equal(host.state.peer, null);
+  // No host: the guest gives up.
+  const lone = new Room("ZZZZ9", "guest", "혼자", net(50), () => T, false);
+  for (let i = 0; i < ROOM.joinTries + 2; i++) {
+    lone.tick();
+    advance(1000);
+  }
+  assert.equal(lone.state.status, "notfound");
+  host.leave();
 });
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();

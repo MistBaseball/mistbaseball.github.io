@@ -793,6 +793,15 @@ export const difficultySetting = (): Difficulty => {
 const byDifficulty = <T>(d: Difficulty, v: Record<Difficulty, T>) => v[d] ?? v.normal;
 /** Easiest first. */
 export const DIFFICULTY_ORDER: Difficulty[] = ["baby", "easy", "normal", "hard", "impossible"];
+/**
+ * One-off repairs of the hall-of-fame board (v12.7): careers whose board was dragged down by
+ * the old load bug (a career made at the start screen set "normal" before an account was
+ * loaded). Matched by the public nickname#tag, applied once when the career loads, after
+ * which the board follows the normal rule again (the easiest difficulty played).
+ */
+export const BOARD_REPAIRS: { nick: string; tag: string; difficulty: Difficulty }[] = [
+  { nick: "이트겔", tag: "1448", difficulty: "impossible" },
+];
 export const easierDifficulty = (a: Difficulty, b: Difficulty) =>
   DIFFICULTY_ORDER.indexOf(a) <= DIFFICULTY_ORDER.indexOf(b) ? a : b;
 export const swingWindow = (
@@ -1814,6 +1823,8 @@ export type Career = {
   hofTag?: string;
   /** Easiest difficulty a match of this career was played on (its hall-of-fame board). */
   minDifficulty?: Difficulty;
+  /** True once a one-off hall-of-fame board repair (`BOARD_REPAIRS`) was applied to this career. */
+  boardRepaired?: boolean;
   /** Chosen at creation, fixed: pitch and bat (default), pitch only, or bat only. */
   role?: Role;
 };
@@ -2361,10 +2372,12 @@ export class BaseballEngine {
         speed: this.playerStats.speed,
         pro: false,
       };
-    // Teammates grow with the player (TEAM_GROWTH of his average gain), up to the stage cap.
+    // Teammates grow with the player (TEAM_GROWTH of his average gain), up to the stage cap
+    // (250 in the majors, where the roster is rated 200–250 to begin with). Growth never
+    // lowers a rating: with a 200 cap an MLB teammate rated 240 used to drop to exactly 200.
     const boost = Math.floor(c.teamBoost ?? 0),
-      cap = STAGES[c.stage].statCap,
-      up = (v: number) => Math.min(cap, Math.max(v, v + boost));
+      cap = tierOf(c) === "mlb" ? LIMITLESS_CAP : STAGES[c.stage].statCap,
+      up = (v: number) => Math.max(v, Math.min(cap, v + boost));
     return boost
       ? { ...p, contact: up(p.contact), power: up(p.power), eye: up(p.eye), speed: up(p.speed) }
       : p;
@@ -2603,6 +2616,22 @@ export class BaseballEngine {
         else delete clean.battingOrder;
         this.state.career = clean;
         this.state.energy = clean.energy;
+        const repair = BOARD_REPAIRS.find(
+          (r) => r.nick === clean.hofNick && r.tag === clean.hofTag,
+        );
+        if (repair && !clean.boardRepaired) {
+          clean.boardRepaired = true;
+          // Only ever up: a career already on this board or a harder one is left alone.
+          if (
+            !isDifficulty(clean.minDifficulty) ||
+            DIFFICULTY_ORDER.indexOf(clean.minDifficulty) <
+              DIFFICULTY_ORDER.indexOf(repair.difficulty)
+          ) {
+            clean.minDifficulty = repair.difficulty;
+            this.setDifficulty(repair.difficulty);
+          }
+          this.persist();
+        }
         // The match being prepared belongs to the loaded day: its weather too.
         if (this.state.mode === "match" && !this.matchActive)
           this.state.weather = this.state.rainOn ? weatherOf(clean) : "clear";

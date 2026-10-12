@@ -5250,10 +5250,13 @@ kbd {
   font-size: 0.8125rem;
   line-height: 1.7;
 }
-@media (max-width: 850px) {
-  .patch-button span {
+@media (max-width: 1200px) {
+  .patch-button span,
+  .beta-tag {
     display: none;
   }
+}
+@media (max-width: 850px) {
   .brand-row {
     gap: 10px;
   }
@@ -6087,4 +6090,119 @@ kbd {
 .stat-buy button small {
   font-size: 11px;
   opacity: 0.8;
+}
+
+/* Multiplayer: header badge, room window. */
+.beta-tag {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: #f4d48c;
+  color: #1b1405;
+  font-size: 10px;
+  font-weight: 800;
+}
+.ping-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(10, 18, 24, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.ping-badge > span,
+.ping-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ping-badge i,
+.ping-chip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #7d8a90;
+}
+.ping-badge .good i,
+.ping-chip.good i {
+  background: #5fd18a;
+}
+.ping-badge .ok i,
+.ping-chip.ok i {
+  background: #f1c75a;
+}
+.ping-badge .bad i,
+.ping-chip.bad i {
+  background: #ee6a5f;
+}
+.multi-dialog {
+  max-width: 460px;
+}
+.multi-start,
+.multi-room {
+  display: grid;
+  gap: 12px;
+}
+.multi-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.multi-code {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.multi-code small {
+  opacity: 0.7;
+}
+.multi-code b {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 1.7rem;
+  letter-spacing: 0.14em;
+  color: #f4d48c;
+}
+.multi-status {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+}
+.multi-status.ready {
+  background: rgba(95, 209, 138, 0.15);
+}
+.multi-status.lost,
+.multi-status.error,
+.multi-status.notfound,
+.multi-status.full {
+  background: rgba(238, 106, 95, 0.16);
+}
+.multi-players {
+  display: grid;
+  gap: 8px;
+}
+.multi-players > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.multi-players > div.empty {
+  opacity: 0.55;
+}
+.multi-players small {
+  opacity: 0.65;
+}
+.header-actions:has(.ping-badge) .prototype-tag {
+  display: none;
 }

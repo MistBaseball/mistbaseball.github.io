@@ -515,3 +515,10 @@ Unity 최종 게임에 앞서 전체 흐름을 시험하는 웹 버전을 만들
 - 경험치로 능력치 구매(`buyStat`, `statBuyCost` = 24 + 능력치×0.4, 하루 일정 화면). 팀 성장·히든 구종 검사는 훈련과 같다.
 - 경험치 획득을 줄였다(`XP`): 탈삼진 5, 안타 6/8/12/18, 득점 3, 완주 35, 승리 25, 무승부 10, 훈련 4, 휴식 2. 시뮬레이션: 한 경기 약 106 + 훈련 20 = 하루 약 126 XP, 가장 비싼 구종(260)은 이틀 분.
 - 게임 규칙 검사 97개. `scripts/balance.mjs`에 `STATBUY=first|left`와 경기당 XP(`xpMatch`)를 추가했다.
+
+## 2026-10-12 — v12.7
+
+- 멀티플레이 1단계(베타): `lib/multi/` (`transport.ts` Supabase Realtime Broadcast 채널 `dr-room-코드`, 시험용 `?mp=local&lag=60` 탭 전송 / `room.ts` 방·핑·시계 차이 / `store.ts`), `components/game/Multiplayer.tsx`(헤더 버튼, 방 창, 핑 배지). 내 핑 = 내 메시지가 서버를 거쳐 돌아오는 시간(`self: true`), 상대 핑 = 상대가 같은 방식으로 재서 보낸 값, 두 사람 사이 왕복·시계 차이는 ping/pong. 의존성 `@supabase/realtime-js` 2.117.3(정확히 고정).
+- 버그: MLB에서 팀 성장(`teamBoost` ≥ 1)이 생기면 동료 능력치가 모두 200으로 눌렸다(`member()`의 상한이 프로 200, MLB 동료는 200~250). 상한을 MLB 250으로 하고 성장이 능력치를 낮추지 않게 했다.
+- `BOARD_REPAIRS`: 불러오기 버그로 명예의 전당 난이도가 내려간 계정(이트겔#1448)을 그 커리어가 로드될 때 한 번(`boardRepaired`) 불가능으로 되돌리고 현재 난이도도 맞춘다. 서버 행은 SQL로 따로 고쳐야 한다(`UPDATE hall_of_fame SET difficulty='impossible' WHERE nickname='이트겔' AND tag='1448'`).
+- 검사 100개(방 로직 가상 네트워크, MLB 동료, 계정 복구).
