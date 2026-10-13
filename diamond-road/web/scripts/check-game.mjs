@@ -3870,6 +3870,23 @@ check("Versus: two engines play a whole match over a laggy network (the batter's
     outs: 2,
   });
 });
+check("Lobby: online and match counts from Presence; full lobby refuses new rooms and matches", async () => {
+  const { LOBBY_LIMIT, countLobby, roomRefusalFor, matchRefusalFor } = await import("../lib/multi/lobby-core.ts");
+  // Two rooms (one in a match), one page that only watches, one tab with two entries.
+  const s = countLobby({
+    a: [{ room: "AAAAA", play: true }],
+    b: [{ room: "AAAAA", play: true }],
+    c: [{ room: "BBBBB", play: false }],
+    w: [{}],
+    d: [{}, { room: "CCCCC", play: false }],
+  });
+  assert.deepEqual(s, { players: 4, matches: 1 }, "watchers are not counted; one room is one match");
+  assert.equal(roomRefusalFor(null), null, "unknown counts limit nothing");
+  assert.equal(roomRefusalFor({ players: LOBBY_LIMIT.players - 1, matches: 0 }), null);
+  assert(roomRefusalFor({ players: LOBBY_LIMIT.players, matches: 0 }), "full lobby: no new room");
+  assert.equal(matchRefusalFor({ players: 5, matches: LOBBY_LIMIT.matches - 1 }), null);
+  assert(matchRefusalFor({ players: 5, matches: LOBBY_LIMIT.matches }), "all match slots taken");
+});
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();
   c.created = true;

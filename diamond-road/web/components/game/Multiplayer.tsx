@@ -30,6 +30,13 @@ import {
 } from "@/lib/game/engine";
 import type { ReportState, VersusInfo } from "@/lib/multi/versus";
 import { RIVAL_LEAGUE } from "@/lib/multi/rivals";
+import {
+  LOBBY_LIMIT,
+  matchRefusal,
+  roomRefusal,
+  connectLobby,
+  useLobbyStats,
+} from "@/lib/multi/lobby";
 import { pingLevel, type RoomState, type RoomStatus } from "@/lib/multi/room";
 
 const STATUS_TEXT: Record<RoomStatus, string> = {
@@ -59,6 +66,8 @@ export function MultiButton({
     vs = useVersus(),
     nick = name.trim() || "선수";
   useEffect(() => bindEngine(engine), [engine]);
+  // While the window is open this page watches the lobby counts.
+  useEffect(() => (open ? connectLobby() : undefined), [open]);
   // An invitation opens the window; a match that starts goes to the field.
   const stage = vs?.stage;
   useEffect(() => {
@@ -90,10 +99,13 @@ export function MultiButton({
             <p className="multi-note">서버 연결이 설정되지 않아 멀티플레이를 쓸 수 없어요.</p>
           ) : !room || room.status === "closed" ? (
             <div className="multi-start">
+              <LobbyLine />
               <button
                 className="primary-button"
                 onClick={() => {
-                  if (!hostRoom(nick)) toast.error("서버 연결이 설정되지 않았어요");
+                  const why = roomRefusal();
+                  if (why) toast.error(why);
+                  else if (!hostRoom(nick)) toast.error("서버 연결이 설정되지 않았어요");
                 }}
               >
                 방 만들기
@@ -104,6 +116,7 @@ export function MultiButton({
                   e.preventDefault();
                   const r = joinRoom(code, nick);
                   if (r === "bad-code") toast.error("방 코드는 영문·숫자 5자리예요 (예: K7QF2)");
+                  else if (r === "full") toast.error(roomRefusal() ?? "지금은 입장할 수 없어요");
                   else if (r === "off") toast.error("서버 연결이 설정되지 않았어요");
                   else setCode("");
                 }}
@@ -127,6 +140,20 @@ export function MultiButton({
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/** Online players and matches in progress, against the limits (nothing while unknown). */
+function LobbyLine() {
+  const s = useLobbyStats();
+  if (!s) return null;
+  const full = s.players >= LOBBY_LIMIT.players || s.matches >= LOBBY_LIMIT.matches;
+  return (
+    <p className={`multi-note lobby-line ${full ? "full" : ""}`} aria-label="접속 현황">
+      접속 <b>{s.players}</b>/{LOBBY_LIMIT.players}명 · 진행 중인 경기 <b>{s.matches}</b>/
+      {LOBBY_LIMIT.matches}
+      {full && " · 자리가 가득 찼어요"}
+    </p>
   );
 }
 
@@ -163,6 +190,7 @@ function RoomView({
         </button>
       </div>
       <p className={`multi-status ${room.status}`}>{STATUS_TEXT[room.status]}</p>
+      <LobbyLine />
       <div className="multi-players">
         <div>
           <span>
@@ -243,7 +271,8 @@ function VersusControls({
   engine: BaseballEngine;
   onStart: () => void;
 }) {
-  const busy = engine.matchActive && !engine.versus,
+  const stats = useLobbyStats(),
+    busy = engine.matchActive && !engine.versus,
     [level, setLevel] = useState<Difficulty>(vs.level);
   if (vs.stage === "invited")
     return (
@@ -301,7 +330,9 @@ function VersusControls({
         className="primary-button"
         disabled={busy}
         onClick={() => {
-          if (!currentVersus()?.invite(3, level)) toast.error("지금은 대결을 신청할 수 없어요");
+          const why = matchRefusal(stats);
+          if (why) toast.error(why);
+          else if (!currentVersus()?.invite(3, level)) toast.error("지금은 대결을 신청할 수 없어요");
         }}
       >
         대결 신청 (3이닝)

@@ -6,6 +6,7 @@ import { Room, newRoomCode, normalizeRoomCode, type RoomState } from "./room";
 import { pickTransport } from "./transport";
 import { Versus, type VersusInfo } from "./versus";
 import { reportVersus } from "./rivals";
+import { roomRefusal, trackLobby, connectLobby } from "./lobby";
 
 let room: Room | null = null;
 let versus: Versus | null = null;
@@ -13,7 +14,13 @@ let engine: BaseballEngine | null = null;
 let unsubs: (() => void)[] = [];
 let pumpTimer: ReturnType<typeof setInterval> | null = null;
 const listeners = new Set<() => void>();
-const notify = () => listeners.forEach((l) => l());
+let releaseLobby: (() => void) | null = null;
+const notify = () => {
+  // Tell the lobby where we are (and whether a match is on) for the online counts.
+  if (room && room.state.status !== "closed")
+    trackLobby({ room: room.code, play: versus?.info.stage === "playing" });
+  listeners.forEach((l) => l());
+};
 
 /** The page's game engine (the versus match plays on it). */
 export function bindEngine(e: BaseballEngine) {
@@ -66,6 +73,7 @@ function enter(code: string, role: "host" | "guest", name: string, id?: string) 
   const factory = pickTransport();
   if (!factory || !engine) return false;
   leave();
+  releaseLobby = connectLobby();
   room = new Room(code, role, name, factory, undefined, true, id);
   versus = new Versus(engine, room);
   const e = engine;
@@ -82,12 +90,14 @@ function enter(code: string, role: "host" | "guest", name: string, id?: string) 
 export const multiAvailable = () => pickTransport() !== null;
 /** Opens a room; returns its code (null if no connection is configured). */
 export function hostRoom(name: string): string | null {
+  if (roomRefusal()) return null;
   const code = newRoomCode();
   return enter(code, "host", name) ? code : null;
 }
-export function joinRoom(input: string, name: string): "bad-code" | "off" | "ok" {
+export function joinRoom(input: string, name: string): "bad-code" | "off" | "ok" | "full" {
   const code = normalizeRoomCode(input);
   if (!code) return "bad-code";
+  if (roomRefusal()) return "full";
   return enter(code, "guest", name) ? "ok" : "off";
 }
 export function leave() {
@@ -98,6 +108,9 @@ export function leave() {
   pumpTimer = null;
   room?.leave();
   room = null;
+  trackLobby(null);
+  releaseLobby?.();
+  releaseLobby = null;
   versus = null;
   saveSession();
   notify();

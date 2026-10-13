@@ -6221,3 +6221,10 @@ kbd {
 .game-overlay .multi-note {
   max-width: 420px;
 }
+
+.lobby-line b {
+  color: var(--foreground, inherit);
+}
+.lobby-line.full {
+  color: #ffb4a8;
+}

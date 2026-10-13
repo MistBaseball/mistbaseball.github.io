@@ -17,6 +17,16 @@ type Patch = { version: string; date: string; title: string; items: string[] };
 
 export const PATCHES: Patch[] = [
   {
+    version: "v13.8",
+    date: "10/13",
+    title: "멀티 접속 제한 · 접속 현황",
+    items: [
+      "멀티 창과 방 화면에 '접속 n/30명 · 진행 중인 경기 n/10'이 보여요.",
+      "접속자가 30명이면 새 방 만들기·입장이 막히고, 진행 중인 경기가 10개면 대결 신청이 막혀요.",
+      "접속 현황을 못 읽을 때는 제한 없이 그대로 쓸 수 있어요.",
+    ],
+  },
+  {
     version: "v13.7",
     date: "10/13",
     title: "멀티 도루 저지",
