@@ -3842,6 +3842,28 @@ check("Versus: two engines play a whole match over a laggy network (the batter's
     m.applyVersusSnapshot(wire());
     assert.equal(m.state.message, "투수 차례");
   }
+  // The pitcher's pickoff goes to the batter's engine, which runs it; the batter cannot throw.
+  {
+    const a = new BaseballEngine(player("가", 3), seed(40)),
+      m = new BaseballEngine(player("나", 4), seed(41)),
+      sent = [];
+    a.beginVersus({ home: false, sheet: m.teamSheet(), innings: 3, onThrow: () => {} });
+    m.beginVersus({ home: true, sheet: a.teamSheet(), innings: 3, onThrow: () => {} });
+    m.versus.onDefense = (c) => sent.push(c);
+    a.versusTurn(true, 1);
+    m.versusTurn(false, 1);
+    a.state.bases = [true, false, false];
+    m.state.bases = [true, false, false];
+    assert.equal(a.pickoff(1), false, "the batter cannot pick off");
+    assert.equal(m.pickoff(2), false, "no runner on second");
+    assert.equal(m.pickoff(1), true, "the pitcher asks");
+    assert.deepEqual(sent, [{ kind: "pickoff", base: 1 }]);
+    assert(m.state.energy < 100, "the pitcher's throw costs energy on his side");
+    assert.equal(a.versusDefense(sent[0]), true, "the batter's engine throws over");
+    assert.equal(a.state.live.kind, "pickoff");
+    assert.equal(a.state.pickoffs, 1);
+    assert.equal(m.versusDefense(sent[0]), false, "the mirror runs no plays");
+  }
   // Blending snapshots: positions move in between, the rest is the newer one.
   assert.deepEqual(blend({ ball: { x: 0, y: 2 }, outs: 1 }, { ball: { x: 10, y: 4 }, outs: 2 }, 0.5), {
     ball: { x: 5, y: 3 },

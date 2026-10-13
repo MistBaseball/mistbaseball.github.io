@@ -170,6 +170,7 @@ export class Versus {
     this.engine.versusRestore(d.engine, (p: RemotePitch) =>
       this.room.send("vs-throw", { matchId: this.info.matchId, p }),
     );
+    this.hookDefense();
     this.set({
       stage: "playing",
       matchId: d.matchId,
@@ -204,9 +205,17 @@ export class Versus {
       level: this.info.level,
       onThrow: (p: RemotePitch) => this.room.send("vs-throw", { matchId: this.info.matchId, p }),
     });
+    this.hookDefense();
     // Top of the first: the guest bats.
     this.engine.versusTurn(!home, 1);
     this.set({ stage: "playing", home, opponent: sheet.player, result: null, report: "none" });
+  }
+
+  /** The pitcher's pickoffs and throw choices go to the batter's engine. */
+  private hookDefense() {
+    const v = this.engine.versus;
+    if (v)
+      v.onDefense = (c) => this.room.send("vs-def", { matchId: this.info.matchId, c });
   }
 
   private receive(m: Msg) {
@@ -249,7 +258,11 @@ export class Versus {
     if (!v || !mine || this.info.stage !== "playing") return;
     if (m.e === "vs-throw" && !v.mirror && this.engine.state.phase === "ready")
       v.pitch = d.p as RemotePitch;
-    else if (m.e === "vs-snap" && v.mirror) {
+    else if (m.e === "vs-def" && !v.mirror) {
+      const c = d.c as { kind?: string; base?: number } | undefined;
+      if (c && (c.kind === "pickoff" || c.kind === "throw"))
+        this.engine.versusDefense({ kind: c.kind, base: Number(c.base) });
+    } else if (m.e === "vs-snap" && v.mirror) {
       const seq = Number(d.seq);
       if (!(seq > this.lastSeq)) return;
       this.lastSeq = seq;

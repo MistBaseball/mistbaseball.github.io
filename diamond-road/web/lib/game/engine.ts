@@ -2108,6 +2108,8 @@ export type RemotePitch = {
  * the pitcher's browser is a mirror (`mirror`): it shows the batter's snapshots, flipped to
  * its own side, and sends its pitches. The sides swap every half.
  */
+/** What the pitcher's side asks of the batter's engine (which runs the plays). */
+export type VersusDefense = { kind: "pickoff" | "throw"; base: number };
 export type VersusState = {
   home: boolean;
   mirror: boolean;
@@ -2119,6 +2121,8 @@ export type VersusState = {
   /** The career as it was: a versus match never changes it. */
   saved: string;
   onThrow: ((p: RemotePitch) => void) | null;
+  /** Pitcher's side: a pickoff or a throw-base choice goes to the batter's browser. */
+  onDefense: ((c: VersusDefense) => void) | null;
   result: { mine: number; theirs: number; reason?: string } | null;
   /** Our eight teammates (member 1–8; 0 unused) evened with the rival's (versus). */
   mates: Player[];
@@ -3952,14 +3956,15 @@ export class BaseballEngine {
     s.resultTone = "gold";
     this.emit();
   }
-  selectThrowBase(base: number) {
+  selectThrowBase(base: number, remote = false) {
     const s = this.state,
-      l = s.live;
+      l = s.live,
+      v = this.versus;
     if (
       s.phase !== "inplay" ||
       !l ||
       s.paused ||
-      this.batting ||
+      (v ? v.mirror === remote : this.batting) ||
       l.kind !== "batted" ||
       l.caughtFly ||
       l.state === "송구" ||
@@ -3970,8 +3975,16 @@ export class BaseballEngine {
     l.requestedBase = base;
     l.throwBase = base;
     l.manual = true;
+    // Versus: the choice also goes to the batter's engine, which runs the play.
+    if (v?.mirror) v.onDefense?.({ kind: "throw", base });
     this.emit();
     return true;
+  }
+  /** Versus (batter's side): the pitcher's pickoff or throw choice arrives. */
+  versusDefense(c: VersusDefense) {
+    const v = this.versus;
+    if (!v || v.mirror || !c || !Number.isInteger(c.base)) return false;
+    return c.kind === "pickoff" ? this.pickoff(c.base, true) : this.selectThrowBase(c.base, true);
   }
   private liveBall(l: LivePlay, time: number): Vec {
     const loose = l.loose;
@@ -6151,12 +6164,37 @@ export class BaseballEngine {
    * Pickoff: instead of pitching, the pitcher throws to a base. The runner dives back from his
    * lead; the fielder tags him if the ball wins the race to the bag.
    */
-  pickoff(base: number) {
-    const s = this.state;
+  pickoff(base: number, remote = false) {
+    const s = this.state,
+      v = this.versus;
+    // Versus: the pitcher's browser only asks; the batter's engine (which runs the play) throws.
+    if (v && !remote) {
+      if (
+        !v.mirror ||
+        !v.onDefense ||
+        v.sent ||
+        s.phase !== "ready" ||
+        s.paused ||
+        base < 1 ||
+        base > 3 ||
+        !s.bases[base - 1]
+      )
+        return false;
+      v.onDefense({ kind: "pickoff", base });
+      s.energy = clamp(
+        s.energy -
+          pitchEnergyCost(s.effort, this.playerStats.stamina) * RULES.pickoffEnergy,
+        0,
+        100,
+      );
+      s.message = "견제!";
+      s.detail = `${base}루 견제 · 타자 화면에서 진행`;
+      this.emit();
+      return true;
+    }
     if (
-      this.versus ||
+      (v ? v.mirror : this.batting) ||
       s.mode !== "match" ||
-      this.batting ||
       s.phase !== "ready" ||
       s.paused ||
       base < 1 ||
@@ -6171,7 +6209,7 @@ export class BaseballEngine {
       runners = this.baseRunners(RULES.runnerLead, RULES.runnerReaction);
     s.pickoffs++;
     // (Our AI pitcher's throws over do not tire the bat-only player.)
-    if (!this.autoHalf)
+    if (!this.autoHalf && !remote)
       s.energy = clamp(
         s.energy -
           pitchEnergyCost(s.effort, this.playerStats.stamina) *
@@ -6550,6 +6588,7 @@ export class BaseballEngine {
       sent: false,
       saved,
       onThrow: o.onThrow,
+      onDefense: null,
       result: null,
       mates: [ours[0], ...mine],
       difficulty,
@@ -6607,6 +6646,7 @@ export class BaseballEngine {
       sent: false,
       saved: d.saved,
       onThrow,
+      onDefense: null,
       result: null,
       difficulty: d.difficulty,
       level,

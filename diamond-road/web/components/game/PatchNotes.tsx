@@ -17,6 +17,15 @@ type Patch = { version: string; date: string; title: string; items: string[] };
 
 export const PATCHES: Patch[] = [
   {
+    version: "v13.7",
+    date: "10/13",
+    title: "멀티 도루 저지",
+    items: [
+      "멀티에서 수비(투수) 쪽도 도루를 막을 수 있어요: 견제 버튼 · F 키가 상대 타자 화면에서 실제로 던져지고, 주자가 늦으면 아웃돼요.",
+      "타구가 나오면 수비 쪽의 1~4 키 송구 선택도 상대 화면에 반영돼요.",
+    ],
+  },
+  {
     version: "v13.6",
     date: "10/12",
     title: "멀티 도루 사인 숨기기",
