@@ -1,6 +1,7 @@
 /**
  * Customizing. Two kinds, kept apart on purpose:
- *  - Look (the player's own: uniform colour, skin tone, height, build): saved in the career
+ *  - Look (the player's own: uniform colour, skin tone, height, build, and the skins bought
+ *    with XP: uniform pattern, ball, bat): saved in the career
  *    (`Career.look`, optional) and sent along in a versus match so the other player sees it.
  *  - Stage (the viewer's own taste: grass, clay, time of day, ball colour): kept in this
  *    browser only (`diamond-road-stage-v1`), never sent and never part of a save code.
@@ -16,8 +17,85 @@ export type Look = {
   height: number;
   /** Index into BUILDS (2 = as modelled). */
   build: number;
+  /** Bought skins: uniform pattern id ("" none), the pattern's second colour, ball, bat. */
+  pattern: string;
+  trim: string;
+  ball: string;
+  bat: string;
 };
-export const DEFAULT_LOOK: Look = { uniform: "", skin: 2, height: 2, build: 2 };
+export const DEFAULT_TRIM = "#ffffff";
+export const DEFAULT_LOOK: Look = {
+  uniform: "",
+  skin: 2,
+  height: 2,
+  build: 2,
+  pattern: "",
+  trim: DEFAULT_TRIM,
+  ball: "",
+  bat: "",
+};
+
+/** Skins sold for XP. A 3-inning match gives about 110 XP, so 300 XP is a few matches. */
+export type SkinKind = "pattern" | "ball" | "bat" | "tool";
+export type Skin = {
+  id: string;
+  kind: SkinKind;
+  name: string;
+  /** 1 common, 2 rare, 3 legendary, 4 mythic. */
+  tier: 1 | 2 | 3 | 4;
+  cost: number;
+  note: string;
+  /** Moves by itself (colours change over time). */
+  anim?: boolean;
+};
+export const TIER_NAMES = ["", "일반", "희귀", "전설", "신화"] as const;
+export const SKINS: readonly Skin[] = [
+  { id: "stripes", kind: "pattern", name: "세로줄", tier: 1, cost: 300, note: "가는 세로 줄무늬" },
+  { id: "band", kind: "pattern", name: "가로 띠", tier: 1, cost: 300, note: "가는 가로 띠" },
+  { id: "check", kind: "pattern", name: "체크", tier: 1, cost: 300, note: "바둑판 무늬" },
+  { id: "twotone", kind: "pattern", name: "투톤 소매", tier: 2, cost: 800, note: "소매만 다른 색" },
+  { id: "dots", kind: "pattern", name: "물방울", tier: 2, cost: 800, note: "동그란 무늬" },
+  { id: "fade", kind: "pattern", name: "그라데이션", tier: 2, cost: 800, note: "아래에서 위로 색이 번져요" },
+  { id: "aurora", kind: "pattern", name: "오로라", tier: 3, cost: 1500, note: "두 색이 물결처럼 움직여요", anim: true },
+  { id: "rainbow", kind: "pattern", name: "무지개", tier: 4, cost: 3300, note: "무지개 색으로 계속 바뀌어요", anim: true },
+  { id: "glow", kind: "ball", name: "야광볼", tier: 2, cost: 800, note: "연둣빛으로 빛나는 공" },
+  { id: "gold", kind: "ball", name: "황금볼", tier: 2, cost: 800, note: "반짝이는 금색 공" },
+  { id: "flame", kind: "ball", name: "불꽃볼", tier: 3, cost: 1500, note: "불타듯 깜빡이는 공", anim: true },
+  { id: "rainbowball", kind: "ball", name: "무지개볼", tier: 3, cost: 1500, note: "색이 계속 바뀌는 공", anim: true },
+  { id: "ebony", kind: "bat", name: "흑단 배트", tier: 1, cost: 300, note: "검은 배트" },
+  { id: "redbat", kind: "bat", name: "빨강 배트", tier: 1, cost: 300, note: "빨간 배트" },
+  { id: "bluebat", kind: "bat", name: "파랑 배트", tier: 1, cost: 300, note: "파란 배트" },
+  { id: "whitebat", kind: "bat", name: "흰 배트", tier: 1, cost: 300, note: "하얀 배트" },
+  { id: "goldbat", kind: "bat", name: "황금 배트", tier: 2, cost: 800, note: "금속 느낌의 금색 배트" },
+  { id: "rainbowbat", kind: "bat", name: "무지개 배트", tier: 3, cost: 1500, note: "색이 계속 바뀌는 배트", anim: true },
+  { id: "picker", kind: "tool", name: "색 고르기", tier: 2, cost: 600, note: "그림판처럼 유니폼·무늬 색을 마음대로 골라요" },
+];
+export const skinOf = (id: string) => SKINS.find((s) => s.id === id);
+export const skinsOf = (kind: SkinKind) => SKINS.filter((s) => s.kind === kind);
+
+/** Look of the ball and bat skins (colour factors on the ball; plain colours on bats). */
+export const BALL_STYLE: Record<string, { color: [number, number, number]; emissive: string; glow: number; anim?: "rainbow" | "pulse" }> = {
+  glow: { color: [0.85, 1.2, 0.55], emissive: "#8dff3a", glow: 0.95 },
+  gold: { color: [1.3, 1.05, 0.38], emissive: "#a47c1a", glow: 0.55 },
+  flame: { color: [1.3, 0.55, 0.3], emissive: "#ff5a1a", glow: 0.9, anim: "pulse" },
+  rainbowball: { color: [1, 1, 1], emissive: "#ffffff", glow: 0.6, anim: "rainbow" },
+};
+export const BAT_STYLE: Record<string, { color: string; metal?: boolean; anim?: boolean }> = {
+  ebony: { color: "#1e1e22" },
+  redbat: { color: "#b02a2a" },
+  bluebat: { color: "#2a4fb0" },
+  whitebat: { color: "#ecebe6" },
+  goldbat: { color: "#d8ac2c", metal: true },
+  rainbowbat: { color: "#ffffff", anim: true },
+};
+/** Rainbow colour (linear 0..1) at time `t` (cycles every 1). */
+export function rainbowRGB(t: number): [number, number, number] {
+  const k = (n: number) => 0.5 + 0.5 * Math.cos(2 * Math.PI * (t + n));
+  return [k(0), k(1 / 3), k(2 / 3)];
+}
+/** Colours anyone may use without the colour picker: the preset swatches and plain white. */
+export const isPresetColor = (c: string) =>
+  c === "" || c === DEFAULT_TRIM || UNIFORM_COLORS.some((u) => u.color === c);
 
 export const UNIFORM_COLORS = [
   { color: "", label: "크림 (기본)" },
@@ -71,13 +149,25 @@ export function cleanLook(x: unknown): Look {
     skin: idx(o.skin, SKIN_TONES.length, DEFAULT_LOOK.skin),
     height: idx(o.height, HEIGHTS.length, DEFAULT_LOOK.height),
     build: idx(o.build, BUILDS.length, DEFAULT_LOOK.build),
+    pattern: kindId(o.pattern, "pattern"),
+    trim:
+      typeof o.trim === "string" && /^#[0-9a-fA-F]{6}$/.test(o.trim)
+        ? o.trim.toLowerCase()
+        : DEFAULT_TRIM,
+    ball: kindId(o.ball, "ball"),
+    bat: kindId(o.bat, "bat"),
   };
 }
+const kindId = (v: unknown, kind: SkinKind) =>
+  typeof v === "string" && SKINS.some((s) => s.id === v && s.kind === kind) ? v : "";
 export const isDefaultLook = (l: Look) =>
   l.uniform === "" &&
   l.skin === DEFAULT_LOOK.skin &&
   l.height === DEFAULT_LOOK.height &&
-  l.build === DEFAULT_LOOK.build;
+  l.build === DEFAULT_LOOK.build &&
+  l.pattern === "" &&
+  l.ball === "" &&
+  l.bat === "";
 
 export type Stage = { grass: number; clay: number; time: number; ball: number };
 export const DEFAULT_STAGE: Stage = { grass: 0, clay: 0, time: 0, ball: 0 };

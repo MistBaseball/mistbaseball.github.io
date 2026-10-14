@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { LOBBY_LIMIT, countLobby, roomRefusalFor, matchRefusalFor } from "../lib/multi/lobby-core.ts";
-import { cleanLook, cleanStage, isDefaultLook, DEFAULT_LOOK, SKIN_TONES, TIMES } from "../lib/game/custom.ts";
+import { cleanLook, cleanStage, isDefaultLook, DEFAULT_LOOK, SKIN_TONES, TIMES, SKINS, rainbowRGB } from "../lib/game/custom.ts";
 import {
   BaseballEngine,
   newCareer,
@@ -3890,7 +3890,7 @@ check("Lobby: online and match counts from Presence; full lobby refuses new room
 });
 check("Customizing: look saved in the career and sent in the team sheet; the other player's look is cleaned; stage is a local taste", () => {
   assert(isDefaultLook(cleanLook(null)), "nothing set = the default look");
-  assert.deepEqual(cleanLook({ uniform: "#ABCDEF", skin: 9, height: -1, build: "x" }), { uniform: "#abcdef", skin: DEFAULT_LOOK.skin, height: DEFAULT_LOOK.height, build: DEFAULT_LOOK.build }, "bad numbers fall back; the colour is lower-cased");
+  assert.deepEqual(cleanLook({ uniform: "#ABCDEF", skin: 9, height: -1, build: "x" }), { ...DEFAULT_LOOK, uniform: "#abcdef" }, "bad numbers fall back; the colour is lower-cased");
   assert.equal(cleanLook({ uniform: "red; background:url(x)" }).uniform, "", "only #rrggbb colours pass");
   assert.deepEqual(cleanStage({ grass: 99, time: 3, ball: "a" }), { grass: 0, clay: 0, time: 3, ball: 0 });
   assert.equal(SKIN_TONES[DEFAULT_LOOK.skin].f, 1, "the default skin tone is the model as it is");
@@ -3910,7 +3910,7 @@ check("Customizing: look saved in the career and sent in the team sheet; the oth
   assert.equal(g.myLook, null);
   assert.equal(g.teamSheet().look, undefined, "no look, nothing sent");
   assert(g.setLook({ uniform: "#2f5fb8", build: 4 }));
-  assert.deepEqual(g.myLook, { uniform: "#2f5fb8", skin: 2, height: 2, build: 4 });
+  assert.deepEqual(g.myLook, { ...DEFAULT_LOOK, uniform: "#2f5fb8", build: 4 });
   assert.deepEqual(g.teamSheet().look, g.myLook, "the other player gets the look");
   assert.deepEqual(JSON.parse(JSON.stringify(g.state.career)).look, g.myLook, "saved with the career");
   assert(g.setLook({ uniform: "", build: 2 }));
@@ -3923,10 +3923,44 @@ check("Customizing: look saved in the career and sent in the team sheet; the oth
   sheet.look.uniform = "javascript:1";
   sheet.look.skin = 77;
   a.beginVersus({ home: false, sheet, innings: 3, onThrow: () => {} });
-  assert.deepEqual(a.rivalLook, { uniform: "", skin: 2, height: 2, build: 2 }, "a broken look from the network is cleaned");
+  assert.deepEqual(a.rivalLook, { ...DEFAULT_LOOK }, "a broken look from the network is cleaned");
   assert.equal(a.setLook({ skin: 0 }), false, "no changes in a versus match");
   a.endVersus();
   assert.equal(a.rivalLook, null);
+});
+check("Skins: bought with XP, owned before worn; the colour picker is a purchase; the look of a stranger only takes known ids", () => {
+  const ids = SKINS.map((s) => s.id);
+  assert.equal(new Set(ids).size, ids.length, "ids are unique");
+  const rainbow = SKINS.find((s) => s.id === "rainbow");
+  assert.equal(rainbow.tier, 4);
+  assert(SKINS.every((s) => s.cost <= rainbow.cost), "the rainbow uniform is the dearest (about 30 matches of XP)");
+  assert(rainbow.cost >= 28 * 110 && rainbow.cost <= 32 * 110, `about 30 matches at ~110 XP: ${rainbow.cost}`);
+  assert.deepEqual(cleanLook({ pattern: "ebony", ball: "stripes", bat: "ebony", trim: "red" }), { ...DEFAULT_LOOK, bat: "ebony" }, "a pattern id in the ball slot (or a bad colour) is dropped");
+  const [r, gg, b] = rainbowRGB(0.2);
+  assert([r, gg, b].every((v) => v >= 0 && v <= 1));
+  const c = newCareer();
+  c.created = true;
+  c.name = "나";
+  c.xp = 1000;
+  const g = new BaseballEngine(c, seed(70));
+  assert.equal(g.setLook({ pattern: "stripes" }), false, "not owned, not worn");
+  assert.equal(g.setLook({ uniform: "#123456" }), false, "a free colour needs the picker");
+  assert(g.setLook({ uniform: "#c8382f" }), "preset colours are free");
+  assert.equal(g.buySkin("rainbow").ok, false, "not enough XP");
+  assert.equal(g.state.career.xp, 1000, "a refused purchase costs nothing");
+  assert(g.buySkin("stripes").ok);
+  assert.equal(g.state.career.xp, 700);
+  assert.equal(g.buySkin("stripes").ok, false, "only once");
+  assert(g.setLook({ pattern: "stripes", trim: "#e3b72c" }));
+  assert.equal(g.myLook.pattern, "stripes");
+  assert.equal(g.setLook({ trim: "#123456" }), false, "a free pattern colour needs the picker too");
+  assert(g.buySkin("picker").ok);
+  assert.equal(g.state.career.xp, 100);
+  assert(g.setLook({ uniform: "#123456", trim: "#654321" }));
+  g.state.career.xp = 5000;
+  g.start("match", 3);
+  g.state.pitchCount[0] = 1;
+  assert.equal(g.buySkin("goldbat").ok, false, "no shopping during a match");
 });
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();

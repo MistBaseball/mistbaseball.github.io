@@ -24,6 +24,8 @@ import * as tex from "./textures";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import {
   BALLS,
+  BALL_STYLE,
+  rainbowRGB,
   CLAY,
   GRASS,
   HEIGHTS,
@@ -33,7 +35,7 @@ import {
   getStage,
   type Stage,
 } from "./custom";
-import { Avatar, CLIP_KEYS, loadAvatarAssets, type AvatarAssets, type ClipName } from "./avatars";
+import { Avatar, CLIP_KEYS, PATTERN_TIME, loadAvatarAssets, type AvatarAssets, type ClipName } from "./avatars";
 import { HitboxView } from "./hitbox-view";
 import { touchDistance } from "./hitbox";
 /** White "[별호] 이름" text for a fielder's head: no box, a dark outline keeps it readable. */
@@ -223,6 +225,7 @@ export class BaseballField {
   private ballMat: THREE.MeshStandardMaterial | null = null;
   /** Whether the player himself is the batter of the play on screen (his runner is him too). */
   private meAtBat = false;
+  private ballSkinShown = "";
   private rain: THREE.LineSegments | null = null;
   private dry = new Map<THREE.MeshStandardMaterial, { roughness: number; color: THREE.Color }>();
   /** Swing animation clock (render time), so a missed swing still plays to the end. */
@@ -1234,6 +1237,7 @@ export class BaseballField {
       this.meAtBat = batting && this.engine.playerUp;
       this.dress(a, batting ? "home" : "away", this.meAtBat);
       a.setBat(true, lefty);
+      a.setBatSkin(this.meAtBat ? (this.engine.myLook?.bat ?? "") : "", this.time);
       a.object.visible = fig.root.visible || following;
       a.object.position.set(lefty ? -0.82 : 0.82, 0, 0);
       a.object.rotation.set(0, 0, 0);
@@ -1809,7 +1813,9 @@ export class BaseballField {
   /** A team's customized colours (and, for the player himself, skin tone); none = default. */
   private teamLook(team: "home" | "away", person: boolean) {
     const l = team === "home" ? this.engine.myLook : this.engine.rivalLook;
-    return l ? { uniform: l.uniform, skin: person ? SKIN_TONES[l.skin].f : 1 } : undefined;
+    return l
+      ? { uniform: l.uniform, skin: person ? SKIN_TONES[l.skin].f : 1, pattern: l.pattern, trim: l.trim }
+      : undefined;
   }
   /** Outfit for an avatar; the player himself also gets his height and build. */
   private dress(a: Avatar, team: "home" | "away", person: boolean) {
@@ -1830,7 +1836,38 @@ export class BaseballField {
     if (this.ballMat) this.ballMat.color.setRGB(...(BALLS[st.ball].tint as [number, number, number]));
     this.setWeather(this.weatherShown);
   }
+  /** Ball skin: mine, except when the other player pitches in a versus match (his). */
+  private updateBallSkin() {
+    const m = this.ballMat;
+    if (!m) return;
+    const l = this.engine.batting && this.engine.versus ? this.engine.rivalLook : this.engine.myLook,
+      id = l?.ball ?? "",
+      s = BALL_STYLE[id];
+    if (!s) {
+      if (this.ballSkinShown) {
+        this.ballSkinShown = "";
+        m.emissive.set("#8f8668");
+        m.emissiveIntensity = 0.35;
+        const tint = BALLS[getStage().ball].tint;
+        m.color.setRGB(tint[0], tint[1], tint[2]);
+      }
+      return;
+    }
+    this.ballSkinShown = id;
+    if (s.anim === "rainbow") {
+      const c = rainbowRGB(this.time * 0.35);
+      m.color.setRGB(...c);
+      m.emissive.setRGB(...c);
+      m.emissiveIntensity = s.glow;
+    } else {
+      m.color.setRGB(...s.color);
+      m.emissive.set(s.emissive);
+      m.emissiveIntensity = s.anim === "pulse" ? s.glow * (0.65 + 0.35 * Math.sin(this.time * 9)) : s.glow;
+    }
+  }
   private updateWeather(dt: number) {
+    PATTERN_TIME.value = this.time;
+    this.updateBallSkin();
     this.updateStage();
     const want = this.engine.raining ? "rain" : "clear";
     if (want !== this.weatherShown) this.setWeather(want);

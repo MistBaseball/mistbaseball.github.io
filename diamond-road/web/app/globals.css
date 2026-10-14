@@ -6301,3 +6301,47 @@ kbd {
   background: none;
   cursor: pointer;
 }
+
+.custom-xp b {
+  color: #f4d48c;
+}
+.custom-row .skin-list {
+  gap: 6px;
+}
+.custom-row .subtle-button.skin {
+  display: inline-grid;
+  gap: 1px;
+  height: auto;
+  padding: 4px 9px;
+  text-align: left;
+}
+.custom-row .subtle-button.skin small {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.65rem;
+  opacity: 0.8;
+}
+.custom-row .subtle-button.skin.unowned {
+  opacity: 0.85;
+  border-style: dashed;
+}
+.custom-row .subtle-button.skin.t2 b {
+  color: #6fb5ff;
+}
+.custom-row .subtle-button.skin.t3 b {
+  color: #c58bff;
+}
+.custom-row .subtle-button.skin.t4 b {
+  background: linear-gradient(90deg, #ff5b5b, #ffc14a, #55dd7a, #4aa8ff, #a56bff, #ff5b5b);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: skin-rainbow 3s linear infinite;
+}
+@keyframes skin-rainbow {
+  to {
+    background-position: 200% 0;
+  }
+}

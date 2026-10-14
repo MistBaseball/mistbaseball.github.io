@@ -10,6 +10,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
+import { BAT_STYLE, rainbowRGB } from "./custom";
 
 export type ClipName =
   | "throw"
@@ -97,9 +98,93 @@ export type AvatarAssets = {
   clips: Map<ClipName, THREE.AnimationClip>;
   /** Team uniform textures: the navy outfit repainted (home cream, away terracotta). */
   uniforms: { home: THREE.Material[]; away: THREE.Material[] };
-  /** An outfit in any colour and skin tone (made once, then kept). */
-  outfit: (color: string, skin: number) => THREE.Material[];
+  /** An outfit in any colour, skin tone and pattern (made once, then kept). */
+  outfit: (color: string, skin: number, pattern?: string, trim?: string) => THREE.Material[];
 };
+
+/** Time for the moving patterns (rainbow, aurora): the field sets it every frame. */
+export const PATTERN_TIME = { value: 0 };
+
+/**
+ * Pattern code for the outfit material. `P` is the vertex in the model's own pose (cm after ×100; y up,
+ * arms along x); `k` says how much of the pattern colour `pc` shows. Only cloth pixels count
+ * (the mask), and the cloth's own shading is kept.
+ */
+const PATTERN_GLSL: Record<string, string> = {
+  stripes: "k = step(0.8, fract(P.x * 0.2));",
+  band: "k = step(0.78, fract(P.y * 0.09));",
+  check: "k = abs(step(0.5, fract(P.x * 0.1)) - step(0.5, fract(P.y * 0.1)));",
+  twotone: "k = smoothstep(24.0, 27.0, abs(P.x));",
+  dots: "k = step(length(fract(P.xy * 0.15) - 0.5), 0.23);",
+  fade: "k = smoothstep(55.0, 150.0, P.y);",
+  aurora: "k = 0.5 + 0.5 * sin(P.y * 0.06 + P.x * 0.03 + uTime * 1.2);",
+  rainbow:
+    "k = 1.0; pc = 0.5 + 0.5 * cos(6.28318 * (P.y * 0.007 + P.x * 0.004 + uTime * 0.25 + vec3(0.0, 0.3333, 0.6667)));",
+};
+
+/** Cloth pixels (1) vs skin, trim, shoes and cap (0), by the same test as `repaint`. */
+function clothMask(source: THREE.Texture) {
+  const img = source.image as CanvasImageSource & { width: number; height: number },
+    canvas = document.createElement("canvas");
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const g = canvas.getContext("2d", { willReadFrequently: true })!;
+  g.drawImage(img, 0, 0);
+  const data = g.getImageData(0, 0, canvas.width, canvas.height),
+    px = data.data;
+  let cloth = 0;
+  for (let i = 0; i < px.length; i += 4) {
+    const r = px[i],
+      gg = px[i + 1],
+      b = px[i + 2],
+      max = Math.max(r, gg, b),
+      on = !(max > 92 || r > b + 6);
+    const v = on ? Math.min(255, ((92 - max) / 22) * 255) : 0;
+    if (on) cloth++;
+    px[i] = px[i + 1] = px[i + 2] = v;
+    px[i + 3] = 255;
+  }
+  g.putImageData(data, 0, 0);
+  const t = new THREE.CanvasTexture(canvas);
+  t.flipY = source.flipY;
+  return { texture: t, cloth };
+}
+
+/** Puts a pattern on an outfit material (a shader patch; the material stays a standard one). */
+function patternize(m: THREE.MeshStandardMaterial, mask: THREE.Texture, pattern: string, color: THREE.Color, trim: string) {
+  const code = PATTERN_GLSL[pattern];
+  if (!code) return;
+  const base = (color.r + color.g + color.b) / 3 || 0.05,
+    trimColor = new THREE.Color(trim);
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.patMask = { value: mask };
+    shader.uniforms.uTime = PATTERN_TIME;
+    shader.uniforms.uTrim = { value: trimColor };
+    shader.uniforms.uBase = { value: base * 0.95 };
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vPat;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvPat = transformed;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        "#include <common>\nvarying vec3 vPat;\nuniform sampler2D patMask;\nuniform float uTime;\nuniform vec3 uTrim;\nuniform float uBase;",
+      )
+      .replace(
+        "#include <map_fragment>",
+        `#include <map_fragment>
+        {
+          vec3 P = vPat * 100.0;
+          float cloth = texture2D(patMask, vMapUv).r;
+          float shade = clamp(dot(diffuseColor.rgb, vec3(0.3333)) / uBase, 0.45, 1.5);
+          vec3 pc = uTrim;
+          float k = 0.0;
+          ${code}
+          diffuseColor.rgb = mix(diffuseColor.rgb, pc * shade, clamp(k, 0.0, 1.0) * cloth);
+        }`,
+      );
+  };
+  m.customProgramCacheKey = () => `pattern-${pattern}`;
+}
 
 /** Every bone name in the model starts with this prefix (three.js drops the ':'). */
 const BONE = "mixamorig9";
@@ -186,13 +271,17 @@ export async function loadAvatarAssets(base = import.meta.env.BASE_URL): Promise
   // Repainted cloth is made once per colour; a skin tone only changes the body material's tint.
   const cloth = new Map<string, THREE.Texture[]>(),
     outfits = new Map<string, THREE.Material[]>();
+  // Where the cloth is (made once), and which of the materials is the outfit.
+  let masks: { texture: THREE.Texture; cloth: number }[] | null = null;
+  const clothMasks = () =>
+    (masks ??= originals.map((m) => (m.map ? clothMask(m.map) : { texture: null!, cloth: 0 })));
   const paint = (color: string) => {
     let maps = cloth.get(color);
     if (!maps) cloth.set(color, (maps = originals.map((m) => (m.map ? repaint(m.map, color) : null!))));
     return maps;
   };
-  const outfit = (color: string, skin = 1) => {
-    const key = `${color}|${skin}`;
+  const outfit = (color: string, skin = 1, pattern = "", trim = "#ffffff") => {
+    const key = `${color}|${skin}|${pattern}|${pattern ? trim : ""}`;
     let mats = outfits.get(key);
     if (!mats) {
       const maps = paint(color);
@@ -205,6 +294,11 @@ export async function loadAvatarAssets(base = import.meta.env.BASE_URL): Promise
         c.metalness = 0;
         return c;
       });
+      if (pattern) {
+        const ms = clothMasks(),
+          at = ms.reduce((best, m, i) => (m.cloth > ms[best].cloth ? i : best), 0);
+        patternize(mats[at] as THREE.MeshStandardMaterial, ms[at].texture, pattern, new THREE.Color(color), trim);
+      }
       outfits.set(key, mats);
     }
     return mats;
@@ -277,15 +371,22 @@ export class Avatar {
    * The team's outfit; `look` gives it a colour of its own (`uniform`) and a skin tone factor
    * (`skin`, 1 = as modelled).
    */
-  setTeam(team: "home" | "away", look?: { uniform?: string; skin?: number }) {
+  setTeam(
+    team: "home" | "away",
+    look?: { uniform?: string; skin?: number; pattern?: string; trim?: string },
+  ) {
     const color = look?.uniform || "",
       skin = look?.skin ?? 1,
-      key = `${team}|${color}|${skin}`;
+      pattern = look?.pattern || "",
+      trim = look?.trim || "#ffffff",
+      key = `${team}|${color}|${skin}|${pattern}|${trim}`;
     if (key === this.outfitKey) return;
     this.outfitKey = key;
     this.team = team;
     const mats =
-      !color && skin === 1 ? this.assets.uniforms[team] : this.assets.outfit(color || (team === "home" ? "#ece6d6" : "#b4563c"), skin);
+      !color && skin === 1 && !pattern
+        ? this.assets.uniforms[team]
+        : this.assets.outfit(color || (team === "home" ? "#ece6d6" : "#b4563c"), skin, pattern, trim);
     this.meshes.forEach((m, i) => (m.material = mats[i % mats.length]));
   }
   /** Height and build (1 = as modelled); the feet stay on the ground. */
@@ -320,6 +421,22 @@ export class Avatar {
    * Bat held in both hands: it runs from the bottom hand through the top hand, so it follows
    * any clip (stance, swing, bunt) without per-clip calibration.
    */
+  private batMat: THREE.MeshStandardMaterial | null = null;
+  private batShown = "";
+  /** A bought bat skin ("" = the wooden bat); moving ones need the clock (`time`, s). */
+  setBatSkin(id: string, time = 0) {
+    const m = this.batMat,
+      s = BAT_STYLE[id];
+    if (!m) return;
+    if (s?.anim) m.color.setRGB(...rainbowRGB(time * 0.3));
+    else if (this.batShown === id) return;
+    else {
+      m.color.set(s?.color ?? "#c79a5b");
+      m.metalness = s?.metal ? 0.85 : 0;
+      m.roughness = s?.metal ? 0.28 : 0.5;
+    }
+    this.batShown = id;
+  }
   setBat(on: boolean, leftHanded = false) {
     if (!on) {
       if (this.bat) this.bat.visible = false;
@@ -329,6 +446,7 @@ export class Avatar {
     if (!this.bat) {
       this.bat = makeBat();
       this.object.add(this.bat);
+      this.batMat = (this.bat.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
     }
     const g = (side: string) =>
       this.object.getObjectByName(`${BONE}${side}HandMiddle1`) ??

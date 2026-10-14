@@ -1,4 +1,11 @@
-import { cleanLook, DEFAULT_LOOK, isDefaultLook, type Look } from "./custom.ts";
+import {
+  cleanLook,
+  DEFAULT_LOOK,
+  isDefaultLook,
+  isPresetColor,
+  skinOf,
+  type Look,
+} from "./custom.ts";
 import { ballHitsBody, touchDistance, tagReaches, type RunnerPose } from "./hitbox.ts";
 export type Vec = { x: number; y: number; z: number };
 export type Mode = "match" | "bullpen" | "batting";
@@ -1849,6 +1856,8 @@ export type Career = {
   /** Hall-of-fame identity of this career: row id and the secret that lets it update its row. */
   /** Customized look (uniform colour, skin tone, height, build); absent = the default. */
   look?: Look;
+  /** Skins bought with XP (ids from custom.ts); the free ones are not listed. */
+  skins?: string[];
   hofId?: string;
   hofSecret?: string;
   /** Ranking nickname and #tag of this career (travels with the save code). */
@@ -7434,10 +7443,41 @@ export class BaseballEngine {
     const l = this.versus?.sheet.look;
     return l ? cleanLook(l) : null;
   }
-  /** Changes the look (any of its fields); kept in the career. Not during a versus match. */
+  ownsSkin(id: string) {
+    return !!this.state.career.skins?.includes(id);
+  }
+  /** Buys a skin with XP (between matches only). */
+  buySkin(id: string) {
+    const c = this.state.career,
+      s = skinOf(id);
+    if (!s) return { ok: false, message: "알 수 없는 스킨" };
+    if (this.ownsSkin(id)) return { ok: false, message: "이미 가지고 있어요." };
+    if (this.matchActive || this.versus)
+      return { ok: false, message: "경기 중에는 살 수 없어요. 경기를 마친 뒤에 하세요." };
+    if (c.xp < s.cost)
+      return { ok: false, message: `경험치가 ${s.cost - c.xp} XP 부족합니다. 경기를 더 치르세요.` };
+    c.xp -= s.cost;
+    c.skins = [...(c.skins ?? []), id];
+    c.history = [`${c.day}일차 · 스킨 ${s.name} 구매 (−${s.cost} XP)`, ...c.history].slice(0, 12);
+    this.persist();
+    this.emit();
+    return { ok: true, message: `${s.name}을(를) 샀어요! 꾸미기에서 입어 보세요.` };
+  }
+  /**
+   * Changes the look (any of its fields); kept in the career. Not during a versus match, and
+   * only with what is owned: pattern, ball and bat skins, and colours outside the presets
+   * (the colour picker).
+   */
   setLook(p: Partial<Look>) {
     if (this.versus) return false;
     const next = cleanLook({ ...DEFAULT_LOOK, ...this.state.career.look, ...p });
+    const own = (id: string) => !id || this.ownsSkin(id);
+    if (!own(next.pattern) || !own(next.ball) || !own(next.bat)) return false;
+    if (
+      (!isPresetColor(next.uniform) || (next.pattern && !isPresetColor(next.trim))) &&
+      !this.ownsSkin("picker")
+    )
+      return false;
     if (isDefaultLook(next)) delete this.state.career.look;
     else this.state.career.look = next;
     this.persist();
