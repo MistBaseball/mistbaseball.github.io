@@ -36,6 +36,7 @@ import { TrainingMinigame, TRAINING_GAMES } from "@/components/game/Minigames";
 import { PatchNotesButton } from "@/components/game/PatchNotes";
 import { HallOfFameButton, HofResetForm } from "@/components/game/HallOfFame";
 import { MultiButton, PingBadge, VersusOverlay } from "@/components/game/Multiplayer";
+import { CustomizeButton } from "@/components/game/Customize";
 import { restoreMulti } from "@/lib/multi/store";
 import { CloudSave, CodeLoader, pullCareer, syncCareer } from "@/components/game/CloudSave";
 import { AiLab } from "@/components/game/AiLab";
@@ -3049,6 +3050,7 @@ export default function DiamondGame() {
           <PatchNotesButton />
           <HallOfFameButton engine={engine} career={s.career} />
           <MultiButton engine={engine} name={s.career.name} onStart={() => setView("game")} />
+          <CustomizeButton engine={engine} />
           <button className="patch-button" onClick={() => setHelp(true)} aria-label="조작법">
             <BookOpen size={15} />
             <span>조작법</span>

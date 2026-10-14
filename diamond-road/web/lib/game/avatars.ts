@@ -97,6 +97,8 @@ export type AvatarAssets = {
   clips: Map<ClipName, THREE.AnimationClip>;
   /** Team uniform textures: the navy outfit repainted (home cream, away terracotta). */
   uniforms: { home: THREE.Material[]; away: THREE.Material[] };
+  /** An outfit in any colour and skin tone (made once, then kept). */
+  outfit: (color: string, skin: number) => THREE.Material[];
 };
 
 /** Every bone name in the model starts with this prefix (three.js drops the ':'). */
@@ -181,15 +183,38 @@ export async function loadAvatarAssets(base = import.meta.env.BASE_URL): Promise
     m.frustumCulled = false;
     originals.push(m.material as THREE.MeshStandardMaterial);
   });
-  const dress = (color: string) =>
-    originals.map((m) => {
-      const c = m.clone();
-      if (m.map) c.map = repaint(m.map, color);
-      c.roughness = 0.85;
-      c.metalness = 0;
-      return c;
-    });
-  return { template, clips, uniforms: { home: dress("#ece6d6"), away: dress("#b4563c") } };
+  // Repainted cloth is made once per colour; a skin tone only changes the body material's tint.
+  const cloth = new Map<string, THREE.Texture[]>(),
+    outfits = new Map<string, THREE.Material[]>();
+  const paint = (color: string) => {
+    let maps = cloth.get(color);
+    if (!maps) cloth.set(color, (maps = originals.map((m) => (m.map ? repaint(m.map, color) : null!))));
+    return maps;
+  };
+  const outfit = (color: string, skin = 1) => {
+    const key = `${color}|${skin}`;
+    let mats = outfits.get(key);
+    if (!mats) {
+      const maps = paint(color);
+      mats = originals.map((m, i) => {
+        const c = m.clone();
+        if (maps[i]) c.map = maps[i];
+        // The first material is the body (skin and hair); the second is the outfit.
+        if (i === 0) c.color.multiplyScalar(skin);
+        c.roughness = 0.85;
+        c.metalness = 0;
+        return c;
+      });
+      outfits.set(key, mats);
+    }
+    return mats;
+  };
+  return {
+    template,
+    clips,
+    uniforms: { home: outfit("#ece6d6"), away: outfit("#b4563c") },
+    outfit,
+  };
 }
 
 /** A leather glove for the glove hand (procedural, small). */
@@ -247,11 +272,25 @@ export class Avatar {
     this.rightHand = this.object.getObjectByName(`${BONE}RightHand`)!;
     this.leftHand = this.object.getObjectByName(`${BONE}LeftHand`)!;
   }
-  setTeam(team: "home" | "away") {
-    if (team === this.team) return;
+  private outfitKey = "";
+  /**
+   * The team's outfit; `look` gives it a colour of its own (`uniform`) and a skin tone factor
+   * (`skin`, 1 = as modelled).
+   */
+  setTeam(team: "home" | "away", look?: { uniform?: string; skin?: number }) {
+    const color = look?.uniform || "",
+      skin = look?.skin ?? 1,
+      key = `${team}|${color}|${skin}`;
+    if (key === this.outfitKey) return;
+    this.outfitKey = key;
     this.team = team;
-    const mats = this.assets.uniforms[team];
+    const mats =
+      !color && skin === 1 ? this.assets.uniforms[team] : this.assets.outfit(color || (team === "home" ? "#ece6d6" : "#b4563c"), skin);
     this.meshes.forEach((m, i) => (m.material = mats[i % mats.length]));
+  }
+  /** Height and build (1 = as modelled); the feet stay on the ground. */
+  setBuild(height = 1, width = 1) {
+    this.object.scale.set(width, height, width);
   }
   /** Bones live in centimetre-scaled parents: attached props need the inverse scale. */
   private attach(prop: THREE.Object3D, bone: THREE.Object3D) {

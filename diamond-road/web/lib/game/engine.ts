@@ -1,3 +1,4 @@
+import { cleanLook, DEFAULT_LOOK, isDefaultLook, type Look } from "./custom.ts";
 import { ballHitsBody, touchDistance, tagReaches, type RunnerPose } from "./hitbox.ts";
 export type Vec = { x: number; y: number; z: number };
 export type Mode = "match" | "bullpen" | "batting";
@@ -1846,6 +1847,8 @@ export type Career = {
   /** Caught with pine tar and ejected: hall-of-fame title 「불명예」 (never cleared). */
   dishonor?: boolean;
   /** Hall-of-fame identity of this career: row id and the secret that lets it update its row. */
+  /** Customized look (uniform colour, skin tone, height, build); absent = the default. */
+  look?: Look;
   hofId?: string;
   hofSecret?: string;
   /** Ranking nickname and #tag of this career (travels with the save code). */
@@ -2085,6 +2088,8 @@ export type TeamSheet = {
   tier?: Tier;
   /** Lineup slot the player himself bats in. */
   slot?: number;
+  /** His customized look (uniform colour, skin, height, build), if any. */
+  look?: Look;
   /** Hall-of-fame id (for the win/loss board), if he has one. */
   playerId?: string;
   stats: Career["stats"];
@@ -6532,6 +6537,7 @@ export class BaseballEngine {
       playerId: c.hofId,
       tier: tierOf(c),
       slot: this.battingOrder.indexOf(0),
+      look: c.look && !isDefaultLook(cleanLook(c.look)) ? cleanLook(c.look) : undefined,
       stats: { ...c.stats },
       pitches: [...c.pitches],
       lineup: Array.from({ length: 9 }, (_, i) => {
@@ -7417,6 +7423,26 @@ export class BaseballEngine {
     this.persist();
     this.emit();
     return { ok: true, message: `${josa(p.name, "을를")} 익혔습니다! 투구 플랜에서 선택하세요.` };
+  }
+  /** The player's own customized look (null: the default). */
+  get myLook(): Look | null {
+    const l = this.state.career.look;
+    return l ? cleanLook(l) : null;
+  }
+  /** Versus: the other player's look as he sent it (null: the default or no match). */
+  get rivalLook(): Look | null {
+    const l = this.versus?.sheet.look;
+    return l ? cleanLook(l) : null;
+  }
+  /** Changes the look (any of its fields); kept in the career. Not during a versus match. */
+  setLook(p: Partial<Look>) {
+    if (this.versus) return false;
+    const next = cleanLook({ ...DEFAULT_LOOK, ...this.state.career.look, ...p });
+    if (isDefaultLook(next)) delete this.state.career.look;
+    else this.state.career.look = next;
+    this.persist();
+    this.emit();
+    return true;
   }
   rename(name: string) {
     const n = name.trim().slice(0, 12);

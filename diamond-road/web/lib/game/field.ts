@@ -22,6 +22,17 @@ import {
 } from "./engine";
 import * as tex from "./textures";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import {
+  BALLS,
+  CLAY,
+  GRASS,
+  HEIGHTS,
+  BUILDS,
+  SKIN_TONES,
+  TIMES,
+  getStage,
+  type Stage,
+} from "./custom";
 import { Avatar, CLIP_KEYS, loadAvatarAssets, type AvatarAssets, type ClipName } from "./avatars";
 import { HitboxView } from "./hitbox-view";
 import { touchDistance } from "./hitbox";
@@ -204,6 +215,14 @@ export class BaseballField {
   private hemi!: THREE.HemisphereLight;
   private sun!: THREE.DirectionalLight;
   private weatherShown: "clear" | "rain" = "clear";
+  /** Customized stage: tinted materials, the stage last applied (see custom.ts). */
+  private tints = new Map<THREE.Material, THREE.Color>();
+  private stageShown: Stage | null = null;
+  private turfMat: THREE.MeshStandardMaterial | null = null;
+  private clayMats: THREE.MeshStandardMaterial[] = [];
+  private ballMat: THREE.MeshStandardMaterial | null = null;
+  /** Whether the player himself is the batter of the play on screen (his runner is him too). */
+  private meAtBat = false;
   private rain: THREE.LineSegments | null = null;
   private dry = new Map<THREE.MeshStandardMaterial, { roughness: number; color: THREE.Color }>();
   /** Swing animation clock (render time), so a missed swing still plays to the end. */
@@ -306,15 +325,13 @@ export class BaseballField {
       this.runners.push(runner);
     }
     // Leather ball with red stitches; a faint glow keeps it readable against the crowd.
-    this.ball = new THREE.Mesh(
-      new THREE.SphereGeometry(BALL_DRAWN, 24, 16),
-      new THREE.MeshStandardMaterial({
-        map: tex.ballTexture(),
-        roughness: 0.45,
-        emissive: "#8f8668",
-        emissiveIntensity: 0.35,
-      }),
-    );
+    this.ballMat = new THREE.MeshStandardMaterial({
+      map: tex.ballTexture(),
+      roughness: 0.45,
+      emissive: "#8f8668",
+      emissiveIntensity: 0.35,
+    });
+    this.ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_DRAWN, 24, 16), this.ballMat);
     this.ball.castShadow = true;
     this.scene.add(this.ball);
     this.halo = new THREE.Mesh(
@@ -547,7 +564,7 @@ export class BaseballField {
       bump = tex.dirtDetail();
     map.repeat.set(1 / tile, 1 / tile);
     bump.repeat.set(1 / 1.2, 1 / 1.2);
-    return new THREE.MeshStandardMaterial({
+    const m = new THREE.MeshStandardMaterial({
       map,
       bumpMap: bump,
       bumpScale: 0.6,
@@ -555,6 +572,8 @@ export class BaseballField {
       polygonOffset: true,
       polygonOffsetFactor: -1,
     });
+    this.clayMats.push(m);
+    return m;
   }
   /** Stand fronts: home bowl radius, foul-line stands' distance from the line, outfield radius. */
   private static readonly HOME_STAND = 26;
@@ -611,16 +630,13 @@ export class BaseballField {
     turfMap.repeat.set(1 / 320, 1 / 320);
     turfMap.offset.set(0.5, 0.625);
     blades.repeat.set(0.5, 0.5);
-    this.ground(
-      this.fieldOutline(),
-      new THREE.MeshStandardMaterial({
-        map: turfMap,
-        bumpMap: blades,
-        bumpScale: 0.9,
-        roughness: 0.92,
-      }),
-      0,
-    );
+    this.turfMat = new THREE.MeshStandardMaterial({
+      map: turfMap,
+      bumpMap: blades,
+      bumpScale: 0.9,
+      roughness: 0.92,
+    });
+    this.ground(this.fieldOutline(), this.turfMat, 0);
     const clay = this.clay();
     // Infield skin: out along the foul lines to the 29 m arc around the mound, with the grass
     // infield square cut out of it (its edges sit 1.2 m inside the base lines).
@@ -1187,7 +1203,7 @@ export class BaseballField {
         lefty = p?.hand === "L",
         last = this.lastAvatarPos.get(fig),
         moved = last ? Math.hypot(fig.root.position.x - last.x, fig.root.position.z - last.z) : 0;
-      a.setTeam(batting ? "away" : "home");
+      this.dress(a, batting ? "away" : "home", i === 0 && (batting || this.engine.role !== "batter"));
       a.setGlove(true, lefty);
       // Models face +Z; the drawn figures face their local -Z.
       place(fig, a, fig.root.rotation.y + Math.PI, !!l);
@@ -1215,7 +1231,8 @@ export class BaseballField {
         lefty = this.engine.batter.hand === "L",
         side = lefty ? "_l" : "_r",
         swingClip = `swing${side}` as "swing_r";
-      a.setTeam(batting ? "home" : "away");
+      this.meAtBat = batting && this.engine.playerUp;
+      this.dress(a, batting ? "home" : "away", this.meAtBat);
       a.setBat(true, lefty);
       a.object.visible = fig.root.visible || following;
       a.object.position.set(lefty ? -0.82 : 0.82, 0, 0);
@@ -1288,7 +1305,7 @@ export class BaseballField {
     const batterSpot = this.avatars!.get(this.batter)!.object.position;
     this.runners.forEach((fig, i) => {
       const a = this.avatars!.get(fig)!;
-      a.setTeam(batting ? "home" : "away");
+      this.dress(a, batting ? "home" : "away", i === 0 && batting && this.meAtBat && !!live);
       a.setGlove(false);
       // The batter-runner leaves from where the batter stood (eased, no pop).
       const leaving = i === 0 && !!live && live.elapsed < BAT_FOLLOW + 0.6;
@@ -1459,7 +1476,7 @@ export class BaseballField {
       this.replay = next;
       next.cast.forEach((c, k) => {
         const a = this.replayAvatars[k];
-        a.setTeam(c.team);
+        a.setTeam(c.team, this.teamLook(c.team, false));
         a.setGlove(c.glove, c.lefty);
       });
     }
@@ -1789,7 +1806,32 @@ export class BaseballField {
     }
     void dt;
   }
+  /** A team's customized colours (and, for the player himself, skin tone); none = default. */
+  private teamLook(team: "home" | "away", person: boolean) {
+    const l = team === "home" ? this.engine.myLook : this.engine.rivalLook;
+    return l ? { uniform: l.uniform, skin: person ? SKIN_TONES[l.skin].f : 1 } : undefined;
+  }
+  /** Outfit for an avatar; the player himself also gets his height and build. */
+  private dress(a: Avatar, team: "home" | "away", person: boolean) {
+    a.setTeam(team, this.teamLook(team, person));
+    const l = person ? (team === "home" ? this.engine.myLook : this.engine.rivalLook) : null;
+    a.setBuild(l ? HEIGHTS[l.height].f : 1, l ? BUILDS[l.build].f : 1);
+  }
+  /** The viewer's stage taste (grass, clay, time of day, ball): applied when it changes. */
+  private updateStage() {
+    const st = getStage();
+    if (st === this.stageShown) return;
+    this.stageShown = st;
+    this.tints.clear();
+    const tint = (m: THREE.Material | null, v: readonly number[]) =>
+      m && this.tints.set(m, new THREE.Color(v[0], v[1], v[2]));
+    tint(this.turfMat, GRASS[st.grass].tint);
+    for (const m of this.clayMats) tint(m, CLAY[st.clay].tint);
+    if (this.ballMat) this.ballMat.color.setRGB(...(BALLS[st.ball].tint as [number, number, number]));
+    this.setWeather(this.weatherShown);
+  }
   private updateWeather(dt: number) {
+    this.updateStage();
     const want = this.engine.raining ? "rain" : "clear";
     if (want !== this.weatherShown) this.setWeather(want);
     if (want !== "rain" || !this.rain) return;
@@ -1823,15 +1865,17 @@ export class BaseballField {
   private setWeather(w: "clear" | "rain") {
     this.weatherShown = w;
     const rain = w === "rain";
-    this.renderer.toneMappingExposure = rain ? 0.92 : 1.05;
-    this.hemi.intensity = rain ? 0.8 : 1.15;
-    this.sun.intensity = rain ? 1.2 : 3.4;
-    (this.scene.background as THREE.Color).set(rain ? "#8e989f" : "#c9d6dc");
+    const T = TIMES[getStage().time];
+    this.renderer.toneMappingExposure = rain ? 0.92 : T.exposure;
+    this.hemi.intensity = rain ? 0.8 : T.hemi;
+    this.sun.intensity = rain ? 1.2 : T.sunI;
+    this.sun.color.set(rain ? TIMES[0].sun : T.sun);
+    (this.scene.background as THREE.Color).set(rain ? "#8e989f" : T.bg);
     const fog = this.scene.fog as THREE.Fog;
-    fog.color.set(rain ? "#8f979c" : "#d4d9d4");
+    fog.color.set(rain ? "#8f979c" : T.fog);
     fog.near = rain ? 70 : 170;
     fog.far = rain ? 330 : 520;
-    (this.skyDome.material as THREE.MeshBasicMaterial).color.set(rain ? "#7d868d" : "#ffffff");
+    (this.skyDome.material as THREE.MeshBasicMaterial).color.set(rain ? "#7d868d" : T.sky);
     // Wet ground: every rough surface (grass, clay, chalk, concrete) gets darker and glossier.
     if (!this.dry.size)
       this.scene.traverse((o) => {
@@ -1842,6 +1886,8 @@ export class BaseballField {
     this.dry.forEach((d, m) => {
       m.roughness = rain ? d.roughness * 0.55 : d.roughness;
       m.color.copy(d.color);
+      const tint = this.tints.get(m);
+      if (tint) m.color.multiply(tint);
       if (rain) m.color.multiplyScalar(0.82);
     });
     if (rain && !this.rain) {

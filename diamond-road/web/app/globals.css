@@ -6228,3 +6228,76 @@ kbd {
 .lobby-line.full {
   color: #ffb4a8;
 }
+
+.custom-dialog {
+  max-width: 520px;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.custom-section {
+  display: grid;
+  gap: 10px;
+}
+.custom-section h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #e8b65a;
+}
+.custom-section h3 small {
+  margin-left: 6px;
+  font-size: 0.7rem;
+  color: #9fb0b4;
+  font-weight: 400;
+}
+.custom-look {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+.custom-preview {
+  width: 96px;
+  height: 120px;
+  background: #16252c;
+  border-radius: 8px;
+}
+.custom-rows {
+  display: grid;
+  gap: 8px;
+}
+.custom-row {
+  display: grid;
+  gap: 4px;
+}
+.custom-row > span {
+  font-size: 0.75rem;
+  color: #9fb0b4;
+}
+.custom-row > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.custom-row .subtle-button.on {
+  border-color: #e8b65a;
+  color: #f4d48c;
+}
+.custom-row .subtle-button.swatch {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+}
+.custom-row .subtle-button.swatch.on {
+  outline: 2px solid #e8b65a;
+  outline-offset: 2px;
+}
+.custom-picker input {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #3b4d56;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}

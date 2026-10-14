@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { LOBBY_LIMIT, countLobby, roomRefusalFor, matchRefusalFor } from "../lib/multi/lobby-core.ts";
+import { cleanLook, cleanStage, isDefaultLook, DEFAULT_LOOK, SKIN_TONES, TIMES } from "../lib/game/custom.ts";
 import {
   BaseballEngine,
   newCareer,
@@ -3870,8 +3872,7 @@ check("Versus: two engines play a whole match over a laggy network (the batter's
     outs: 2,
   });
 });
-check("Lobby: online and match counts from Presence; full lobby refuses new rooms and matches", async () => {
-  const { LOBBY_LIMIT, countLobby, roomRefusalFor, matchRefusalFor } = await import("../lib/multi/lobby-core.ts");
+check("Lobby: online and match counts from Presence; full lobby refuses new rooms and matches", () => {
   // Two rooms (one in a match), one page that only watches, one tab with two entries.
   const s = countLobby({
     a: [{ room: "AAAAA", play: true }],
@@ -3886,6 +3887,46 @@ check("Lobby: online and match counts from Presence; full lobby refuses new room
   assert(roomRefusalFor({ players: LOBBY_LIMIT.players, matches: 0 }), "full lobby: no new room");
   assert.equal(matchRefusalFor({ players: 5, matches: LOBBY_LIMIT.matches - 1 }), null);
   assert(matchRefusalFor({ players: 5, matches: LOBBY_LIMIT.matches }), "all match slots taken");
+});
+check("Customizing: look saved in the career and sent in the team sheet; the other player's look is cleaned; stage is a local taste", () => {
+  assert(isDefaultLook(cleanLook(null)), "nothing set = the default look");
+  assert.deepEqual(cleanLook({ uniform: "#ABCDEF", skin: 9, height: -1, build: "x" }), { uniform: "#abcdef", skin: DEFAULT_LOOK.skin, height: DEFAULT_LOOK.height, build: DEFAULT_LOOK.build }, "bad numbers fall back; the colour is lower-cased");
+  assert.equal(cleanLook({ uniform: "red; background:url(x)" }).uniform, "", "only #rrggbb colours pass");
+  assert.deepEqual(cleanStage({ grass: 99, time: 3, ball: "a" }), { grass: 0, clay: 0, time: 3, ball: 0 });
+  assert.equal(SKIN_TONES[DEFAULT_LOOK.skin].f, 1, "the default skin tone is the model as it is");
+  assert(TIMES.length >= 4);
+  const c = newCareer();
+  c.created = true;
+  c.name = "나";
+  const player = (name, n) => {
+    const c = newCareer();
+    c.created = true;
+    c.team = "triples";
+    c.name = name;
+    c.hofId = `00000000-0000-4000-a000-00000000000${n}`;
+    return c;
+  };
+  const g = new BaseballEngine(c, seed(60));
+  assert.equal(g.myLook, null);
+  assert.equal(g.teamSheet().look, undefined, "no look, nothing sent");
+  assert(g.setLook({ uniform: "#2f5fb8", build: 4 }));
+  assert.deepEqual(g.myLook, { uniform: "#2f5fb8", skin: 2, height: 2, build: 4 });
+  assert.deepEqual(g.teamSheet().look, g.myLook, "the other player gets the look");
+  assert.deepEqual(JSON.parse(JSON.stringify(g.state.career)).look, g.myLook, "saved with the career");
+  assert(g.setLook({ uniform: "", build: 2 }));
+  assert.equal(g.myLook, null, "back to the default: the field is removed");
+  // The other player's look comes from his sheet, cleaned; ours cannot change during a match.
+  const a = new BaseballEngine(player("가", 3), seed(61)),
+    m = new BaseballEngine(player("나", 4), seed(62));
+  m.setLook({ uniform: "#c8382f" });
+  const sheet = JSON.parse(JSON.stringify(m.teamSheet()));
+  sheet.look.uniform = "javascript:1";
+  sheet.look.skin = 77;
+  a.beginVersus({ home: false, sheet, innings: 3, onThrow: () => {} });
+  assert.deepEqual(a.rivalLook, { uniform: "", skin: 2, height: 2, build: 2 }, "a broken look from the network is cleaned");
+  assert.equal(a.setLook({ skin: 0 }), false, "no changes in a versus match");
+  a.endVersus();
+  assert.equal(a.rivalLook, null);
 });
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();
