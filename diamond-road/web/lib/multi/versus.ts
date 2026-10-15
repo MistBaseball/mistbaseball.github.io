@@ -11,16 +11,33 @@
  * round trip) when its snapshot arrives; a ball in play is shown slightly behind (INTERP)
  * and smoothed between snapshots.
  *
+ * Home-run derby (`invite(…, derby)`): the same plumbing, one pitch per turn. The batter's
+ * side counts the pitch (`vs-turn` with the running number `n`) and the other one bats next,
+ * until both have taken all their pitches (or one can no longer catch up). Derby results are
+ * not sent to the win/loss board.
+ *
  * Driven by `pump()` (every frame in the browser, by hand in the checks); time comes from the
  * injected clock, like the room.
  */
 import type {
   BaseballEngine,
   Difficulty,
+  PitchId,
   RemotePitch,
   TeamSheet,
   VersusSnap,
 } from "../game/engine";
+/** Derby set-up as the host picks it (the seed comes from the match id). */
+export type DerbyPick = { pitch: PitchId | "mix"; count: number };
+const DERBY_COUNTS = [5, 10, 15, 20];
+const cleanPick = (x: unknown): DerbyPick | null => {
+  const o = (x && typeof x === "object" ? x : null) as Record<string, unknown> | null;
+  if (!o || typeof o.pitch !== "string" || !/^[a-z]+$/.test(o.pitch)) return null;
+  const count = Number(o.count);
+  return DERBY_COUNTS.includes(count) ? { pitch: o.pitch as PitchId | "mix", count } : null;
+};
+/** Both screens get the same machine pitches: the seed is read from the shared match id. */
+const seedOf = (matchId: string | null) => parseInt((matchId ?? "1").slice(0, 7), 16) || 1;
 // (Kept here, not imported: the checks load this file with Node's type stripping, where a
 // value import needs the file extension.)
 const LEVELS: Difficulty[] = ["baby", "easy", "normal", "hard", "impossible"];
@@ -37,10 +54,12 @@ export type VersusInfo = {
   innings: number;
   /** The match's difficulty (the host picks it). */
   level: Difficulty;
+  /** Home-run derby (null: a normal match). */
+  derby: DerbyPick | null;
   result: { mine: number; theirs: number; reason?: string } | null;
   report: ReportState;
 };
-type Turn = { over: boolean; inning: number; batter: "host" | "guest" };
+type Turn = { over: boolean; inning: number; batter: "host" | "guest"; n?: number };
 
 /** Snapshot rate while the ball is in play (ms) and otherwise (keep-alive). */
 export const VERSUS = { liveEvery: 50, idleEvery: 400, interp: 110, lostAfter: 40000 };
@@ -92,6 +111,8 @@ export class Versus {
       }) => Promise<ReportState>)
     | null = null;
   private opponentId: string | undefined;
+  /** Derby: the last turn number handled (a turn sent again after a refresh is skipped). */
+  private derbyN = -1;
 
   constructor(engine: BaseballEngine, room: Room, now: () => number = () => performance.now()) {
     this.engine = engine;
@@ -104,6 +125,7 @@ export class Versus {
       opponent: null,
       innings: 3,
       level: "normal",
+      derby: null,
       result: null,
       report: "none",
     };
@@ -119,12 +141,28 @@ export class Versus {
   }
 
   /** Host: ask the guest for a match. */
-  invite(innings = 3, level: Difficulty = this.info.level) {
+  invite(innings = 3, level: Difficulty = this.info.level, derby: DerbyPick | null = null) {
     if (this.room.role !== "host" || this.room.state.status !== "ready") return false;
     if (this.engine.matchActive && !this.engine.versus) return false;
-    const matchId = newMatchId();
-    this.room.send("vs-invite", { matchId, innings, level, sheet: this.engine.teamSheet() });
-    this.set({ stage: "inviting", matchId, innings, level, result: null, report: "none" });
+    const matchId = newMatchId(),
+      pick = derby ? cleanPick(derby) : null;
+    if (derby && !pick) return false;
+    this.room.send("vs-invite", {
+      matchId,
+      innings,
+      level,
+      derby: pick,
+      sheet: this.engine.teamSheet(),
+    });
+    this.set({
+      stage: "inviting",
+      matchId,
+      innings,
+      level,
+      derby: pick,
+      result: null,
+      report: "none",
+    });
     return true;
   }
   /** Guest: take the invitation. */
@@ -167,6 +205,7 @@ export class Versus {
     this.lostSince = null;
     this.graceUntil = this.now() + VERSUS.lostAfter;
     this.resumePending = true;
+    this.derbyN = -1;
     this.engine.versusRestore(d.engine, (p: RemotePitch) =>
       this.room.send("vs-throw", { matchId: this.info.matchId, p }),
     );
@@ -177,6 +216,7 @@ export class Versus {
       home: d.home,
       innings: d.innings,
       level: d.engine.level ?? "normal",
+      derby: d.engine.derby ? { pitch: d.engine.derby.pitch, count: d.engine.derby.count } : null,
       opponent: d.opponent,
       result: null,
       report: "none",
@@ -198,11 +238,14 @@ export class Versus {
     this.handed = false;
     this.buffer = [];
     this.lostSince = null;
+    this.derbyN = -1;
+    const pick = this.info.derby;
     this.engine.beginVersus({
       home,
       sheet,
       innings: this.info.innings,
       level: this.info.level,
+      derby: pick ? { ...pick, seed: seedOf(this.info.matchId) } : null,
       onThrow: (p: RemotePitch) => this.room.send("vs-throw", { matchId: this.info.matchId, p }),
     });
     this.hookDefense();
@@ -230,6 +273,7 @@ export class Versus {
           matchId: String(d.matchId),
           innings: d.innings === 9 ? 9 : 3,
           level: LEVELS.includes(d.level as Difficulty) ? (d.level as Difficulty) : "normal",
+          derby: cleanPick(d.derby),
           opponent: this.inviteSheet?.player ?? "상대",
           result: null,
           report: "none",
@@ -277,8 +321,10 @@ export class Versus {
     } else if (m.e === "vs-turn") {
       const t = d as unknown as Turn,
         meBat = (t.batter === "host") === (this.room.role === "host");
-      // Already in that half (the turn was sent again after a refresh): nothing to do.
-      if (
+      // Derby: each turn has its number; one already handled is not done again.
+      if (v.derby) {
+        if (typeof t.n === "number" && t.n <= this.derbyN && !t.over) return;
+      } else if (
         !t.over &&
         v.mirror === !meBat &&
         this.engine.state.inning === t.inning &&
@@ -376,6 +422,20 @@ export class Versus {
   }
   /** The batting side decides at the end of its half: the other one bats, or it is over. */
   private decideTurn(): Turn {
+    const d = this.engine.state.derby;
+    if (this.engine.versus?.derby && d) {
+      const me = this.room.role,
+        other = me === "host" ? "guest" : "host",
+        [theirs, mine] = d.taken,
+        [hrTheirs, hrMine] = d.hr,
+        left = (n: number) => d.count - n,
+        // Over when both are done, or when one cannot catch up even with a homer every pitch.
+        over =
+          (mine >= d.count && theirs >= d.count) ||
+          hrMine + left(mine) < hrTheirs ||
+          hrTheirs + left(theirs) < hrMine;
+      return { over, inning: 1, batter: theirs < d.count ? other : me, n: mine + theirs };
+    }
     const s = this.engine.state,
       { host, guest } = this.realScore(),
       last = s.inning >= s.maxInnings;
@@ -386,6 +446,7 @@ export class Versus {
   }
   private applyTurn(t: Turn) {
     if (!this.engine.versus) return;
+    if (typeof t.n === "number") this.derbyN = Math.max(this.derbyN, t.n);
     this.handed = false;
     this.buffer = [];
     if (t.over) {
@@ -400,7 +461,7 @@ export class Versus {
     this.engine.versusFinish(reason);
     const r = this.engine.versus?.result ?? null;
     this.set({ stage: "over", result: r, report: reason ? "skip" : "none" });
-    if (!reason && r && this.onReport && this.info.matchId) {
+    if (!reason && r && this.onReport && this.info.matchId && !this.info.derby) {
       this.set({ report: "sending" });
       void this.onReport({
         matchId: this.info.matchId,

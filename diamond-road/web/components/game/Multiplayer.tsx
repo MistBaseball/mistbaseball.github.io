@@ -23,12 +23,14 @@ import {
   useVersus,
 } from "@/lib/multi/store";
 import {
+  DERBY_COUNTS,
   DIFFICULTIES,
+  PITCHES,
   type BaseballEngine,
   type Difficulty,
   type GameState,
 } from "@/lib/game/engine";
-import type { ReportState, VersusInfo } from "@/lib/multi/versus";
+import type { DerbyPick, ReportState, VersusInfo } from "@/lib/multi/versus";
 import { RIVAL_LEAGUE } from "@/lib/multi/rivals";
 import {
   LOBBY_LIMIT,
@@ -50,6 +52,10 @@ const STATUS_TEXT: Record<RoomStatus, string> = {
   closed: "방이 닫혔어요",
 };
 const ms = (v: number | null) => (v === null ? "—" : `${v} ms`);
+
+const pitchName = (id: string) =>
+  id === "mix" ? "섞어서 (매번 다른 구종)" : (PITCHES.find((p) => p.id === id)?.name ?? id);
+const derbyLabel = (d: DerbyPick) => `홈런 더비 · ${pitchName(d.pitch)} · ${d.count}구씩`;
 
 export function MultiButton({
   engine,
@@ -92,7 +98,8 @@ export function MultiButton({
             <DialogDescription>
               친구와 1:1 대결(3이닝, 난이도는 방장이 골라요). 한 명이 던지면 한 명이 치고, 이닝마다
               공수를 바꿉니다. 수비는 AI가 맡아요. 나와 상대는 각자 자기 능력치 그대로, 팀 동료들은
-              두 팀의 평균에 맞춰져요. 내 명예의 전당 난이도에는 영향이 없어요.
+              두 팀의 평균에 맞춰져요. 「홈런 더비」는 기계가 던지는 공을 번갈아 한 공씩 쳐서 홈런을
+              더 많이 친 사람이 이겨요. 내 명예의 전당 난이도에는 영향이 없어요.
             </DialogDescription>
           </DialogHeader>
           {!multiAvailable() ? (
@@ -273,12 +280,15 @@ function VersusControls({
 }) {
   const stats = useLobbyStats(),
     busy = engine.matchActive && !engine.versus,
-    [level, setLevel] = useState<Difficulty>(vs.level);
+    [level, setLevel] = useState<Difficulty>(vs.level),
+    [kind, setKind] = useState<"match" | "derby">(vs.derby ? "derby" : "match"),
+    [pitch, setPitch] = useState<string>(vs.derby?.pitch ?? "fastball"),
+    [count, setCount] = useState<number>(vs.derby?.count ?? 10);
   if (vs.stage === "invited")
     return (
       <div className="vs-invite">
         <b>
-          {vs.opponent}님이 대결을 신청했어요! (난이도{" "}
+          {vs.opponent}님이 {vs.derby ? derbyLabel(vs.derby) : "대결"}을 신청했어요! (난이도{" "}
           {DIFFICULTIES.find((d) => d.id === vs.level)?.label ?? "보통"})
         </b>
         <div>
@@ -306,8 +316,66 @@ function VersusControls({
       </button>
     );
   if (room.role !== "host") return <p className="multi-note">방장이 대결을 신청하면 시작돼요.</p>;
+  const derby: DerbyPick | null =
+    kind === "derby" ? { pitch: pitch as DerbyPick["pitch"], count } : null;
   return (
     <>
+      <div className="creation-difficulty" role="radiogroup" aria-label="게임 종류">
+        <span>게임 종류</span>
+        <div>
+          {(
+            [
+              ["match", "대결 (3이닝)"],
+              ["derby", "홈런 더비"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              role="radio"
+              aria-checked={kind === id}
+              className={`subtle-button ${kind === id ? "on" : ""}`}
+              onClick={() => setKind(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {kind === "derby" && (
+        <>
+          <div className="creation-difficulty" role="radiogroup" aria-label="더비 공 개수">
+            <span>
+              공 개수 <small>한 사람당 · 한 공씩 번갈아 쳐요</small>
+            </span>
+            <div>
+              {DERBY_COUNTS.map((n) => (
+                <button
+                  key={n}
+                  role="radio"
+                  aria-checked={count === n}
+                  className={`subtle-button ${count === n ? "on" : ""}`}
+                  onClick={() => setCount(n)}
+                >
+                  {n}구
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="derby-pitch">
+            <span>
+              던질 공 <small>기계가 던져요 · 두 사람에게 같은 순서로</small>
+            </span>
+            <select value={pitch} onChange={(e) => setPitch(e.target.value)} aria-label="던질 공">
+              <option value="mix">섞어서 (매번 다른 구종)</option>
+              {PITCHES.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
+      )}
       <div className="creation-difficulty" role="radiogroup" aria-label="대결 난이도">
         <span>
           대결 난이도 <small>멀티 대결은 명예의 전당 난이도에 영향이 없어요</small>
@@ -332,10 +400,11 @@ function VersusControls({
         onClick={() => {
           const why = matchRefusal(stats);
           if (why) toast.error(why);
-          else if (!currentVersus()?.invite(3, level)) toast.error("지금은 대결을 신청할 수 없어요");
+          else if (!currentVersus()?.invite(3, level, derby))
+            toast.error("지금은 대결을 신청할 수 없어요");
         }}
       >
-        대결 신청 (3이닝)
+        {derby ? `홈런 더비 신청 (${count}구)` : "대결 신청 (3이닝)"}
       </button>
       {busy && <small className="multi-note">진행 중인 시즌 경기를 끝내야 대결할 수 있어요.</small>}
     </>
@@ -377,11 +446,11 @@ export function VersusOverlay({
   return (
     <div className="game-overlay">
       <span className="eyebrow">
-        멀티 대결 · {engine.teams[1]} vs {engine.teams[0]}
+        {vs?.derby ? "홈런 더비" : "멀티 대결"} · {engine.teams[1]} vs {engine.teams[0]}
       </span>
       <h2>{s.message}</h2>
       <p>{s.detail}</p>
-      {!result?.reason && report === "skip" && (
+      {!result?.reason && report === "skip" && !vs?.derby && (
         <p className="multi-note">
           명예의 전당 닉네임이 두 사람 모두 있어야 {RIVAL_LEAGUE}에 기록돼요.
         </p>
@@ -403,7 +472,7 @@ export function VersusOverlay({
         <button
           className="primary-button"
           disabled={vs?.stage === "inviting"}
-          onClick={() => currentVersus()?.invite(3)}
+          onClick={() => currentVersus()?.invite(3, vs?.level, vs?.derby ?? null)}
         >
           {vs?.stage === "inviting" ? "상대 수락 기다리는 중…" : "한 판 더"}
         </button>
@@ -419,6 +488,42 @@ export function VersusOverlay({
       >
         멀티 대결 끝내기 (혼자 하기로)
       </button>
+    </div>
+  );
+}
+
+/** Side panel in a home-run derby: both tallies, the last pitch, whose turn it is. */
+export function DerbyPanel({ engine, s }: { engine: BaseballEngine; s: GameState }) {
+  const d = s.derby;
+  if (!d) return null;
+  const myTurn = !!engine.versus && !engine.versus.mirror,
+    row = (who: string, hr: number, taken: number, on: boolean) => (
+      <div className={`derby-row ${on ? "on" : ""}`}>
+        <span>{who}</span>
+        <b>{hr}</b>
+        <small>
+          홈런 · {taken}/{d.count}구
+        </small>
+      </div>
+    );
+  return (
+    <div className="derby-panel" aria-label="홈런 더비">
+      <div className="derby-head">
+        <b>홈런 더비</b>
+        <small>
+          {pitchName(d.pitch)} · {d.count}구씩
+        </small>
+      </div>
+      {row(`나 · ${engine.teams[1]}`, d.hr[1], d.taken[1], myTurn)}
+      {row(`상대 · ${engine.teams[0]}`, d.hr[0], d.taken[0], !myTurn)}
+      <p className="multi-note">
+        {s.phase === "finished"
+          ? "경기 끝!"
+          : myTurn
+            ? "내 차례 · 공을 보고 스윙! (강타 스윙이 홈런에 유리해요)"
+            : "상대 차례 · 지켜보세요"}
+        {d.last && ` · 지난 공: ${d.last}`}
+      </p>
     </div>
   );
 }

@@ -6345,3 +6345,61 @@ kbd {
     background-position: 200% 0;
   }
 }
+
+.derby-pitch {
+  display: grid;
+  gap: 4px;
+  font-size: 0.8rem;
+}
+.derby-pitch small {
+  margin-left: 6px;
+  opacity: 0.7;
+}
+.derby-pitch select {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #3b4d56;
+  border-radius: 6px;
+  background: #18272f;
+  color: #e8ecec;
+}
+.derby-panel {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #3b4d56;
+  border-radius: 8px;
+  background: #12212a;
+}
+.derby-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.derby-head b {
+  color: #f4d48c;
+}
+.derby-head small {
+  font-size: 0.72rem;
+  opacity: 0.8;
+}
+.derby-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.derby-row.on {
+  background: #1d3340;
+  outline: 1px solid #e8b65a;
+}
+.derby-row b {
+  font-size: 1.4rem;
+  color: #f2f0df;
+}
+.derby-row small {
+  font-size: 0.7rem;
+  opacity: 0.75;
+}

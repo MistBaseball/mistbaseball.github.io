@@ -2123,6 +2123,34 @@ export type TeamSheet = {
   pitches: PitchId[];
   lineup: Player[];
 };
+/**
+ * Home-run derby (a versus variant): a pitching machine throws the host's chosen pitch
+ * (`"mix"`: a different one each time), `count` pitches to each player, taking turns one pitch
+ * at a time; the most home runs wins. Both players get the same pitches in the same order
+ * (`seed`). `taken` / `hr` are [the other player, me] like the scores.
+ */
+export type DerbySpec = { pitch: PitchId | "mix"; count: number; seed: number };
+export type DerbyState = {
+  pitch: PitchId | "mix";
+  count: number;
+  taken: [number, number];
+  hr: [number, number];
+  /** The last pitch's outcome, for the screen ("홈런! 128 m", "파울" …). */
+  last: string;
+};
+export const DERBY_COUNTS = [5, 10, 15, 20] as const;
+/** The machine: a firm, accurate arm (velocity 80 ≈ 144 km/h four-seam) that throws strikes. */
+export const DERBY_MACHINE = { velocity: 80, control: 100, movement: 55, energy: 100, effort: 90, form: 70 };
+/** A valid derby set-up from anything (an invitation from the other player), or null. */
+export function cleanDerby(x: unknown): DerbySpec | null {
+  const o = (x && typeof x === "object" ? x : null) as Record<string, unknown> | null;
+  if (!o) return null;
+  const pitch = o.pitch === "mix" || PITCHES.some((p) => p.id === o.pitch) ? (o.pitch as PitchId | "mix") : null,
+    count = Number(o.count),
+    seed = Number(o.seed);
+  if (!pitch || !(DERBY_COUNTS as readonly number[]).includes(count) || !Number.isFinite(seed)) return null;
+  return { pitch, count, seed: Math.floor(Math.abs(seed)) % 2147483647 };
+}
 /** A pitch chosen on the pitcher's screen, thrown on the batter's (his numbers come along). */
 export type RemotePitch = {
   pitch: PitchId;
@@ -2162,6 +2190,8 @@ export type VersusState = {
   difficulty: Difficulty;
   /** The match's difficulty (the host picks it; never saved, never a hall-of-fame board). */
   level: Difficulty;
+  /** Home-run derby instead of a match (null: a normal versus match). */
+  derby: DerbySpec | null;
 };
 /**
  * Versus: both teams' teammates are evened out. Ratings go to the formula scale (pros mapped by
@@ -2214,6 +2244,7 @@ export const VERSUS_FIELDS = [
   "replay",
   "hbp",
   "lastResult",
+  "derby",
 ] as const;
 /** A player's own match fields (saved with the versus match for a refresh, never sent). */
 const VERSUS_OWN = ["half", "maxInnings", "energy", "selected", "effort", "swingStyle"] as const;
@@ -2274,6 +2305,8 @@ export type GameState = {
   career: Career;
   saveStatus: string;
   lastResult: string;
+  /** Home-run derby tallies (versus derby only). */
+  derby: DerbyState | null;
   batFeedback: BatFeedback | null;
   /** XP earned so far in the current season match, credited when the match finishes. */
   matchXp: number;
@@ -2382,6 +2415,7 @@ const initial = (career: Career, mode: Mode = "match", maxInnings = 3): GameStat
   career,
   saveStatus: "이 브라우저에 자동 저장",
   lastResult: "",
+  derby: null,
   batFeedback: null,
   matchXp: 0,
   lastXpGain: 0,
@@ -2633,13 +2667,13 @@ export class BaseballEngine {
     );
   }
   /** The AI pitcher's four-seam speed (km/h) before fatigue, effort and rain. */
-  private get aiFastball() {
+  get aiFastball() {
     const ace = this.awayRoster.ace.velocity;
     if (this.impossibleMlb) return RULES.impossibleMlb.fastball - 10 + clamp(ace - 17, 0, 10);
     return this.stageRules.aiVelocity + ace;
   }
   /** How many of the pitch table the AI pitcher mixes in. */
-  private get aiPitchKinds() {
+  get aiPitchKinds() {
     if (this.impossibleMlb) return RULES.impossibleMlb.kinds;
     return Math.min(PITCHES.length, this.stageRules.aiPitchKinds, this.awayRoster.ace.kinds + 2);
   }
@@ -2694,6 +2728,8 @@ export class BaseballEngine {
   }
   /** This tier's win-rate balance (match mode only; practice uses the neutral values). */
   get balance() {
+    // A home-run derby is batting practice against a machine: no match handicap.
+    if (this.versus?.derby) return NEUTRAL_BALANCE;
     return this.state.mode === "match" ? TIER_BALANCE[tierOf(this.state.career)] : NEUTRAL_BALANCE;
   }
   /** [visiting team, our team] for the scoreboard and the log. */
@@ -3340,6 +3376,7 @@ export class BaseballEngine {
       const v = this.versus;
       s.timer -= dt;
       if (s.timer <= 0) {
+        if (v.derby && !v.pitch) v.pitch = this.derbyPitch();
         if (v.pitch) this.launch(true);
         else {
           v.waited += dt;
@@ -6337,6 +6374,10 @@ export class BaseballEngine {
       this.ready();
       return;
     }
+    if (this.versus?.derby) {
+      this.derbyNext();
+      return;
+    }
     if (this.versus) {
       // Versus: the half ends on three outs, or on a walk-off (the home side ahead in the last
       // inning). The multiplayer code then hands the bat over or ends the match.
@@ -6604,6 +6645,7 @@ export class BaseballEngine {
     sheet: TeamSheet;
     innings: number;
     level?: Difficulty;
+    derby?: DerbySpec | null;
     onThrow: (p: RemotePitch) => void;
   }) {
     const saved = JSON.stringify(this.state.career),
@@ -6648,8 +6690,15 @@ export class BaseballEngine {
       mates: [ours[0], ...mine],
       difficulty,
       level,
+      derby: (o.derby && cleanDerby(o.derby)) || null,
     };
-    s.log = [`멀티 대결 · ${this.teams[1]} vs ${this.teams[0]}`];
+    const d = this.versus.derby;
+    s.derby = d ? { pitch: d.pitch, count: d.count, taken: [0, 0], hr: [0, 0], last: "" } : null;
+    s.log = [
+      d
+        ? `홈런 더비 · ${this.teams[1]} vs ${this.teams[0]} · ${d.count}구`
+        : `멀티 대결 · ${this.teams[1]} vs ${this.teams[0]}`,
+    ];
     this.emit();
   }
   /** Versus: everything needed to pick the match up again after a page refresh. */
@@ -6667,6 +6716,7 @@ export class BaseballEngine {
       saved: v.saved,
       difficulty: v.difficulty,
       level: v.level,
+      derby: v.derby,
       state: Object.fromEntries(keys.map((k) => [k, st[k]])),
     };
   }
@@ -6705,6 +6755,7 @@ export class BaseballEngine {
       result: null,
       difficulty: d.difficulty,
       level,
+      derby: (d.derby && cleanDerby(d.derby)) || null,
     };
     if (!d.mirror && s.phase !== "ready" && s.phase !== "result" && s.phase !== "between") {
       s.flight = null;
@@ -6734,12 +6785,71 @@ export class BaseballEngine {
     s.pickoffs = 0;
     s.coin = null;
     s.stealCall = false;
-    if (s.autoCamera) s.camera = batting ? "catcher" : "pitcher";
+    if (s.autoCamera) s.camera = batting || v.derby ? "catcher" : "pitcher";
+    // Derby: always the player himself at the plate (his own slot), never a teammate.
+    if (v.derby) {
+      if (batting) s.order[1] = Math.max(0, this.battingOrder.indexOf(0));
+      s.inning = 1;
+    }
     this.ready();
     if (!batting) {
-      s.message = "투수 차례";
-      s.detail = "구종을 고르고 목표 지점을 클릭하면 상대 화면에서 공이 날아갑니다";
+      s.message = v.derby ? "상대 타석" : "투수 차례";
+      s.detail = v.derby
+        ? "상대가 치는 중이에요 · 지켜보세요"
+        : "구종을 고르고 목표 지점을 클릭하면 상대 화면에서 공이 날아갑니다";
+    } else if (v.derby) {
+      const d = s.derby;
+      s.message = "내 타석!";
+      s.detail = d ? `${d.taken[1] + 1}번째 공 / ${d.count}구 · 담장을 넘기세요` : "";
     }
+    this.emit();
+  }
+  /** Derby (batter's side): the machine's next pitch; the same n-th pitch for both players. */
+  private derbyPitch(): RemotePitch {
+    const v = this.versus!,
+      d = v.derby!,
+      n = this.state.derby?.taken[1] ?? 0;
+    // A small hash of (seed, pitch number, k): the same numbers on both screens.
+    const h = (k: number) => {
+      let x = (d.seed ^ Math.imul(n + 1, 0x9e3779b1) ^ Math.imul(k + 7, 0x85ebca6b)) >>> 0;
+      x = Math.imul(x ^ (x >>> 16), 0x7feb352d) >>> 0;
+      x = Math.imul(x ^ (x >>> 15), 0x846ca68b) >>> 0;
+      return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+    };
+    const pitch = d.pitch === "mix" ? PITCHES[Math.floor(h(1) * PITCHES.length)].id : d.pitch;
+    return {
+      pitch,
+      // Strikes, mostly over the plate (a derby is for swinging).
+      aim: { x: (h(2) - 0.5) * 0.32, y: 0.66 + h(3) * 0.34 },
+      ...DERBY_MACHINE,
+    };
+  }
+  /** Derby (batter's side): the pitch is over; count it and hand the bat over. */
+  private derbyNext() {
+    const s = this.state,
+      d = s.derby;
+    if (!d) return;
+    const homer = s.lastResult === "HOME RUN";
+    d.taken = [d.taken[0], d.taken[1] + 1];
+    if (homer) d.hr = [d.hr[0], d.hr[1] + 1];
+    const words: Record<string, string> = {
+      STRIKE: "헛스윙·스트라이크",
+      BALL: "볼 (안 침)",
+      FOUL: "파울",
+      "HIT BY PITCH": "몸에 맞음",
+    };
+    d.last = homer
+      ? `홈런!${s.lastDistance ? ` ${Math.round(s.lastDistance)} m` : ""}`
+      : (words[s.lastResult] ?? "아웃·안타 (홈런 아님)");
+    // Runs do not count in a derby: only home runs.
+    s.score = [d.hr[0], d.hr[1]];
+    s.balls = 0;
+    s.strikes = 0;
+    s.outs = 0;
+    s.bases = [false, false, false];
+    s.phase = "between";
+    s.message = homer ? "홈런!" : d.last;
+    s.detail = `나 ${d.hr[1]}개 (${d.taken[1]}/${d.count}구) · 상대 ${d.hr[0]}개 (${d.taken[0]}/${d.count}구)`;
     this.emit();
   }
   /** Versus (batter's side): the state the pitcher's screen needs. */
@@ -6791,6 +6901,11 @@ export class BaseballEngine {
           continue;
         }
       }
+      if (k === "derby" && val) {
+        const d = val as DerbyState;
+        s[k] = { ...d, taken: [d.taken[1], d.taken[0]], hr: [d.hr[1], d.hr[0]] };
+        continue;
+      }
       if (k === "flight") this.shown.flight = snap._flight;
       if (k === "live") this.shown.live = snap._live;
       s[k] = PAIRED.has(k) && Array.isArray(val) ? [val[1], val[0]] : val;
@@ -6800,7 +6915,10 @@ export class BaseballEngine {
     st.resultTone = flipTone(st.resultTone) as string;
     // Between pitches the batter's own lines ("다음 공을 기다리세요", or his steal sign!) are
     // not for the pitcher: he sees his own.
-    if (st.phase === "ready") {
+    if (st.phase === "ready" && v.derby) {
+      st.message = "상대 타석";
+      st.detail = "상대가 치는 중이에요 · 지켜보세요";
+    } else if (st.phase === "ready") {
       st.message = v.sent ? "투구!" : "투수 차례";
       st.detail = v.sent
         ? "타자 화면으로 날아가는 중"
@@ -6850,7 +6968,7 @@ export class BaseballEngine {
   private sendVersusPitch() {
     const s = this.state,
       v = this.versus!;
-    if (v.sent || !v.onThrow) return false;
+    if (v.sent || !v.onThrow || v.derby) return false;
     const st = this.playerStats,
       p = pitchData(s.selected);
     v.sent = true;
@@ -6892,7 +7010,9 @@ export class BaseballEngine {
           : "GAME OVER";
     s.detail = reason
       ? `${reason} · ${this.teams[1]} ${mine} : ${theirs} ${this.teams[0]}`
-      : `멀티 대결 · ${this.teams[1]} ${mine} : ${theirs} ${this.teams[0]}`;
+      : v.derby
+        ? `홈런 더비 · ${this.teams[1]} ${mine}개 : ${theirs}개 ${this.teams[0]}`
+        : `멀티 대결 · ${this.teams[1]} ${mine} : ${theirs} ${this.teams[0]}`;
     this.emit();
   }
   /** Leaves versus play: the career is exactly as before, a new single-player match is set. */
@@ -7244,7 +7364,7 @@ export class BaseballEngine {
    * at bat, bat-only player in the field). */
   get autoHalf() {
     const s = this.state;
-    if (s.mode !== "match") return false;
+    if (s.mode !== "match" || this.versus?.derby) return false;
     return this.role === "pitcher" ? this.batting : this.role === "batter" ? !this.batting : false;
   }
   /** The player's stats as the game uses them right now (300 across the board in a limit break). */

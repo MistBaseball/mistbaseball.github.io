@@ -31,6 +31,8 @@ import {
   STAT_NAMES,
   XP,
   GIFTS,
+  cleanDerby,
+  DERBY_COUNTS,
   HOME_LINEUP,
   validOrder,
   ALL_PITCHES,
@@ -4028,6 +4030,121 @@ check("Skins: bought with XP, owned before worn; the colour picker is a purchase
   g.start("match", 3);
   g.state.pitchCount[0] = 1;
   assert.equal(g.buySkin("goldbat").ok, false, "no shopping during a match");
+});
+check("Home-run derby: the host's pitch and count, one pitch each in turn, same pitch order for both, homers only, no win/loss report", () => {
+  assert.deepEqual([...DERBY_COUNTS], [5, 10, 15, 20]);
+  assert.equal(cleanDerby({ pitch: "knuckle", count: 5, seed: 1 }), null, "the hidden pitch is not offered");
+  assert.equal(cleanDerby({ pitch: "fastball", count: 7, seed: 1 }), null, "only 5/10/15/20");
+  assert.deepEqual(cleanDerby({ pitch: "mix", count: 10, seed: 3 }), { pitch: "mix", count: 10, seed: 3 });
+  let T = 0;
+  const queue = [],
+    rooms = new Map();
+  const net = (ping) => (code, h) => {
+    const me = { h, ping };
+    if (!rooms.has(code)) rooms.set(code, new Set());
+    rooms.get(code).add(me);
+    queue.push({ at: T, fn: () => h.onStatus("open") });
+    return {
+      send(m) {
+        const c = JSON.parse(JSON.stringify(m));
+        if (m.e === "echo") queue.push({ at: T + ping, fn: () => h.onMessage(c) });
+        for (const o of rooms.get(code)) if (o !== me) queue.push({ at: T + (ping + o.ping) / 2, fn: () => o.h.onMessage(c) });
+      },
+      close() {},
+    };
+  };
+  const advance = (ms) => {
+    const end = T + ms;
+    for (;;) {
+      queue.sort((a, b) => a.at - b.at);
+      if (!queue.length || queue[0].at > end) break;
+      const e = queue.shift();
+      T = Math.max(T, e.at);
+      e.fn();
+    }
+    T = end;
+  };
+  const mk = (name, role) => {
+    const c = newCareer();
+    Object.assign(c, { created: true, team: "triples", name });
+    c.stats.power = c.stats.contact = 100;
+    // A pitcher-only career still swings for himself in a derby.
+    if (role) c.role = role;
+    return c;
+  };
+  const he = new BaseballEngine(mk("방장"), seed(90)),
+    ge = new BaseballEngine(mk("손님", "pitcher"), seed(91));
+  const before = [JSON.stringify(he.state.career), JSON.stringify(ge.state.career)];
+  const hr = new Room("DERBY", "host", "방장", net(40), () => T, false),
+    gr = new Room("DERBY", "guest", "손님", net(90), () => T, false);
+  advance(1);
+  hr.tick();
+  gr.tick();
+  advance(500);
+  const hv = new Versus(he, hr, () => T),
+    gv = new Versus(ge, gr, () => T);
+  let reports = 0;
+  hv.onReport = gv.onReport = async () => {
+    reports++;
+    return "counted";
+  };
+  assert(!hv.invite(3, "normal", { pitch: "fastball", count: 7 }), "a bad count is refused");
+  assert(hv.invite(3, "normal", { pitch: "mix", count: 5 }));
+  advance(200);
+  assert.deepEqual(gv.info.derby, { pitch: "mix", count: 5 }, "the guest sees the set-up");
+  assert(gv.accept());
+  advance(300);
+  assert.equal(ge.versus.mirror, false, "the guest bats first");
+  assert.equal(ge.autoHalf, false, "no AI swings for a pitcher-only player in a derby");
+  const order = [],
+    pitches = { host: [], guest: [] };
+  let n = 1;
+  const rnd = () => ((n = (Math.imul(1664525, n) + 1013904223) >>> 0) / 4294967296);
+  const bat = (e, who) => {
+    const s = e.state,
+      f = s.flight;
+    if (!e.versus || e.versus.mirror || s.phase !== "flight" || !f || f.swung) return;
+    if (!f.planned) {
+      f.planned = true;
+      pitches[who].push(f.pitch);
+      if (order[order.length - 1] !== who || order.length === 0) order.push(who);
+      const h = f.hint ?? f.target;
+      e.setAim(h.x + (rnd() - 0.5) * 0.04, h.y + (rnd() - 0.5) * 0.04);
+      e.state.swingStyle = "power";
+    }
+    if (f.elapsed >= f.visualDuration * 0.92) e.swing();
+  };
+  let guard = 0;
+  while ((hv.info.stage === "playing" || gv.info.stage === "playing") && guard++ < 60000) {
+    bat(he, "host");
+    bat(ge, "guest");
+    he.tick(1 / 60);
+    ge.tick(1 / 60);
+    advance(1000 / 60);
+    hv.pump();
+    gv.pump();
+  }
+  assert.equal(hv.info.stage, "over");
+  assert.equal(gv.info.stage, "over");
+  const a = hv.info.result,
+    b = gv.info.result;
+  assert(!a.reason && !b.reason, "played to the end");
+  assert.deepEqual([a.mine, a.theirs], [b.theirs, b.mine], `host ${a.mine}:${a.theirs}, guest ${b.mine}:${b.theirs}`);
+  const d = he.state.derby;
+  assert.deepEqual([d.hr[1], d.hr[0]], [a.mine, a.theirs], "the score is the home-run count");
+  // One pitch each in turn (the end may come early when one can no longer catch up).
+  assert(order.every((w, i) => w === (i % 2 ? "host" : "guest")), `turns ${order.join(",")}`);
+  assert(d.taken[0] <= 5 && d.taken[1] <= 5);
+  if (d.taken[0] === 5 && d.taken[1] === 5) assert.equal(order.length, 10);
+  // Mixed pitches: the n-th pitch is the same for both players.
+  const k = Math.min(pitches.host.length, pitches.guest.length);
+  assert(k >= 3);
+  assert.deepEqual(pitches.host.slice(0, k), pitches.guest.slice(0, k), "same pitch order");
+  assert(new Set(pitches.host).size > 1, "mix: not always the same pitch");
+  assert.equal(reports, 0, "derby results do not go to the win/loss board");
+  hv.quit();
+  gv.quit();
+  assert.deepEqual([JSON.stringify(he.state.career), JSON.stringify(ge.state.career)], before, "careers untouched");
 });
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();

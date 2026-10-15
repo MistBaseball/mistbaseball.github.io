@@ -35,7 +35,7 @@ import {
 import { TrainingMinigame, TRAINING_GAMES } from "@/components/game/Minigames";
 import { PatchNotesButton } from "@/components/game/PatchNotes";
 import { HallOfFameButton, HofResetForm } from "@/components/game/HallOfFame";
-import { MultiButton, PingBadge, VersusOverlay } from "@/components/game/Multiplayer";
+import { DerbyPanel, MultiButton, PingBadge, VersusOverlay } from "@/components/game/Multiplayer";
 import { CustomizeButton } from "@/components/game/Customize";
 import { restoreMulti } from "@/lib/multi/store";
 import { CloudSave, CodeLoader, pullCareer, syncCareer } from "@/components/game/CloudSave";
@@ -3309,7 +3309,7 @@ export default function DiamondGame() {
               </div>
               <Callout s={s} />
               {engine.versus && !manualPause
-                ? (s.phase === "between" || s.phase === "finished") && (
+                ? ((s.phase === "between" && !s.derby) || s.phase === "finished") && (
                     <VersusOverlay engine={engine} s={s} onLeave={() => setView("life")} />
                   )
                 : (manualPause || s.phase === "between" || s.phase === "finished") && (
@@ -3433,7 +3433,8 @@ export default function DiamondGame() {
                 화면 위에서 배속(×1~×8)을 바꿀 수 있어요.
               </p>
             )}
-            {!batting && (
+            <DerbyPanel engine={engine} s={s} />
+            {!batting && !s.derby && (
               <div className="pp-rival">
                 <span className="pp-order">
                   {String((s.order[batting ? 1 : 0] % 9) + 1).padStart(2, "0")}
@@ -3461,7 +3462,7 @@ export default function DiamondGame() {
                 </span>
               </div>
             )}
-            {batting && s.mode !== "bullpen" && (
+            {batting && s.mode !== "bullpen" && !s.derby && (
               <div className="pp-rival">
                 <span className="pp-order">{String((s.order[1] % 9) + 1).padStart(2, "0")}</span>
                 <span className="pp-rival-name">
@@ -3473,7 +3474,7 @@ export default function DiamondGame() {
                 </span>
                 <span className="pp-rival-stats">
                   <span>
-                    구속 <b>{STAGES[s.career.stage].aiVelocity + engine.awayRoster.ace.velocity}</b>
+                    구속 <b>{engine.aiFastball}</b>
                   </span>
                   <span>
                     제구{" "}
@@ -3489,17 +3490,14 @@ export default function DiamondGame() {
                   </span>
                   <span>
                     구종{" "}
-                    <b>
-                      {Math.min(
-                        STAGES[s.career.stage].aiPitchKinds,
-                        engine.awayRoster.ace.kinds + 2,
-                      )}
-                    </b>
+                    <b>{engine.aiPitchKinds}</b>
                   </span>
                 </span>
               </div>
             )}
-            {!batting ? (
+            {s.derby && !batting ? (
+              <p className="auto-note">상대가 치는 동안 기다려요. 공은 기계가 던져요.</p>
+            ) : !batting ? (
               <>
                 <div className="pp-step">
                   <h3>
