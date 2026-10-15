@@ -1237,7 +1237,11 @@ export class BaseballField {
       this.meAtBat = batting && this.engine.playerUp;
       this.dress(a, batting ? "home" : "away", this.meAtBat);
       a.setBat(true, lefty);
-      a.setBatSkin(this.meAtBat ? (this.engine.myLook?.bat ?? "") : "", this.time);
+      // The whole batting team swings the team's bat skin (mine; the rival's in a versus match).
+      a.setBatSkin(
+        (batting ? this.engine.myLook : this.engine.rivalLook)?.bat ?? "",
+        this.time,
+      );
       a.object.visible = fig.root.visible || following;
       a.object.position.set(lefty ? -0.82 : 0.82, 0, 0);
       a.object.rotation.set(0, 0, 0);

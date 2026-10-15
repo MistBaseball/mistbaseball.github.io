@@ -31,6 +31,12 @@ if (tier === "mlb") Object.assign(c, { league: "mlb", mlbClub: MLB_TEAMS[0].id }
 for (const k of Object.keys(c.stats)) c.stats[k] = cap;
 c.pitches = ["fastball", "slider", "curve", "changeup", "sinker", "splitter"];
 const g = new BaseballEngine(c, rng);
+// DIFF=impossible (etc.): that difficulty and its rival AI.
+if (process.env.DIFF) {
+  const { applyLevel } = await import("../lib/ai/levels.ts");
+  g.setDifficulty(process.env.DIFF);
+  applyLevel(g, process.env.DIFF);
+}
 const res = { n: 0, w: 0, d: 0, l: 0, rf: 0, ra: 0 };
 for (let m = 0; m < Number(N); m++) {
   g.state.career.day = 1 + m;

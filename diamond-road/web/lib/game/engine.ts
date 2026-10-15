@@ -695,6 +695,13 @@ export const RULES = {
     mlbMax: 22,
   },
   flyReadMargin: 0.45,
+  /**
+   * 불가능 difficulty in the MLB: the AI ace's four-seam tops out at `fastball` km/h (the best
+   * arms; the weakest ace is 10 below), every other pitch is slower by its own delta (−3 to −26,
+   * so a game spans about fastball−30 … fastball), and he mixes in `kinds` pitches (the fastball
+   * a `fastballShare` of the time).
+   */
+  impossibleMlb: { fastball: 179, kinds: 11, fastballShare: 0.4 },
 };
 export type Stage = "high" | "pro";
 /**
@@ -912,6 +919,8 @@ export const XP = {
   draw: 10,
   training: 4,
   rest: 2,
+  /** The plain 「경험치 쌓기」 drill: one action, no minigame. */
+  drill: 40,
 };
 /** XP price of the next point of a stat: grows with the stat. */
 export const statBuyCost = (value: number) => 24 + Math.floor(Math.max(0, value) * 0.4);
@@ -924,6 +933,13 @@ export const statBuyTotal = (value: number, n: number, cap: number) => {
 };
 /** Actions (training, rest, study) available each day before the day's match. */
 export const DAY_ACTIONS = 7;
+/**
+ * One-time XP gifts, given to every career that already has played (not to a brand-new one)
+ * the next time the game opens. The career remembers which it got (`Career.gifts`).
+ */
+export const GIFTS: { id: string; xp: number; text: string }[] = [
+  { id: "bug-2026-10-15", xp: 1000, text: "버그 피해 보상" },
+];
 export type StatKey = keyof Career["stats"];
 export const STAT_NAMES: Record<StatKey, string> = {
   velocity: "구속",
@@ -1858,6 +1874,8 @@ export type Career = {
   look?: Look;
   /** Skins bought with XP (ids from custom.ts); the free ones are not listed. */
   skins?: string[];
+  /** One-time gifts already received (ids in `GIFTS`). */
+  gifts?: string[];
   hofId?: string;
   hofSecret?: string;
   /** Ranking nickname and #tag of this career (travels with the save code). */
@@ -2597,6 +2615,34 @@ export class BaseballEngine {
     );
   }
   /** Team strength for the panel: batting/running averages, defense, and the pitcher. */
+  /** The rival ace's next pitch (a random one of his mix; the fastball more often on 불가능 MLB). */
+  private aiPitchPick(): PitchData {
+    const n = Math.max(1, Math.min(PITCHES.length, this.aiPitchKinds));
+    if (this.impossibleMlb && n > 1 && this.rng() < RULES.impossibleMlb.fastballShare)
+      return PITCHES[0];
+    return PITCHES[Math.floor(this.rng() * n)];
+  }
+  /** 불가능 on the MLB stage (not versus): faster arms and a bigger pitch mix. */
+  private get impossibleMlb() {
+    const c = this.state.career;
+    return (
+      !this.versus &&
+      this.state.mode === "match" &&
+      this.state.difficulty === "impossible" &&
+      tierOf(c) === "mlb"
+    );
+  }
+  /** The AI pitcher's four-seam speed (km/h) before fatigue, effort and rain. */
+  private get aiFastball() {
+    const ace = this.awayRoster.ace.velocity;
+    if (this.impossibleMlb) return RULES.impossibleMlb.fastball - 10 + clamp(ace - 17, 0, 10);
+    return this.stageRules.aiVelocity + ace;
+  }
+  /** How many of the pitch table the AI pitcher mixes in. */
+  private get aiPitchKinds() {
+    if (this.impossibleMlb) return RULES.impossibleMlb.kinds;
+    return Math.min(PITCHES.length, this.stageRules.aiPitchKinds, this.awayRoster.ace.kinds + 2);
+  }
   teamStrength(home: boolean) {
     const hitters = home
         ? Array.from({ length: 9 }, (_, i) => this.ourRunner(i))
@@ -2611,7 +2657,7 @@ export class BaseballEngine {
       velocity: Math.round(
         home
           ? fastballSpeed(this.playerStats.velocity)
-          : this.stageRules.aiVelocity + r.ace.velocity,
+          : this.aiFastball,
       ),
     };
   }
@@ -3121,12 +3167,7 @@ export class BaseballEngine {
         : vp
           ? pitchData(vp.pitch)
           : machine
-            ? PITCHES[
-                Math.floor(
-                  this.rng() *
-                    Math.min(PITCHES.length, stage.aiPitchKinds, this.awayRoster.ace.kinds + 2),
-                )
-              ]
+            ? this.aiPitchPick()
             : pitchData(s.selected);
     if (this.versus) {
       this.versus.pitch = null;
@@ -3143,8 +3184,7 @@ export class BaseballEngine {
     const formPenalty = 0;
     const speed = clamp(
       (machine
-        ? stage.aiVelocity +
-          this.awayRoster.ace.velocity +
+        ? this.aiFastball +
           (auto ? RULES.autoPitchVelocity : 0) -
           (this.cheerActive && ai ? 3 : 0)
         : fastballSpeed(vp ? vp.velocity : stats.velocity)) +
@@ -6091,7 +6131,7 @@ export class BaseballEngine {
     const s = this.state,
       stage = this.stageRules,
       g = () => gaussian(this.rng),
-      n = Math.min(AUTO_ARSENAL.length, stage.aiPitchKinds, this.awayRoster.ace.kinds + 2),
+      n = Math.min(AUTO_ARSENAL.length, this.aiPitchKinds),
       arsenal = AUTO_ARSENAL.slice(0, Math.max(1, n)).map(pitchData),
       has = (...ids: PitchId[]) => arsenal.find((p) => ids.includes(p.id)),
       fastball = arsenal[0],
@@ -6908,6 +6948,7 @@ export class BaseballEngine {
         batting: { cost: 20, stat: "contact", gain: 1, name: "타격 훈련" },
         power: { cost: 22, stat: "power", gain: 1, name: "타격 파워 훈련" },
         study: { cost: 6, gain: 4, name: "영상 분석·학교 수업" },
+        xpwork: { cost: 10, gain: XP.drill, name: "경험치 쌓기" },
         rest: { cost: -38, gain: 8, name: "휴식·컨디션 회복" },
       },
       o = options[kind];
@@ -6935,7 +6976,7 @@ export class BaseballEngine {
     } else if (kind === "study") o.gain = Math.round(2 + q * 4);
     c.energy = clamp(c.energy - o.cost, 0, 100);
     c.actions--;
-    c.xp += kind === "rest" ? XP.rest : XP.training;
+    c.xp += kind === "rest" ? XP.rest : kind === "xpwork" ? XP.drill : XP.training;
     if (o.stat) {
       const before = c.stats[o.stat];
       c.stats[o.stat] = clamp(before + o.gain, 0, cap);
@@ -6943,7 +6984,7 @@ export class BaseballEngine {
       const rise = c.stats[o.stat] - before,
         n = Object.keys(c.stats).length;
       c.teamBoost = (c.teamBoost ?? 0) + (rise / n) * TEAM_GROWTH;
-    } else c.form = clamp(c.form + o.gain, 0, 100);
+    } else if (kind !== "xpwork") c.form = clamp(c.form + o.gain, 0, 100);
     if (o.stat) c.form = clamp(c.form - RULES.formTraining, 0, 100);
     c.scout = clamp(c.scout + (o.stat ? 0.5 : 0), 0, 100);
     c.history = [
@@ -6958,7 +6999,7 @@ export class BaseballEngine {
       ok: true,
       grade,
       gain: o.gain,
-      message: `${o.name} ${o.stat ? `${grade} · ${statLabel(o.stat)} +${o.gain}` : "완료"} · 남은 행동력 ${c.actions}/${DAY_ACTIONS}`,
+      message: `${o.name} ${o.stat ? `${grade} · ${statLabel(o.stat)} +${o.gain}` : kind === "xpwork" ? `경험치 +${XP.drill} XP` : "완료"} · 남은 행동력 ${c.actions}/${DAY_ACTIONS}`,
     };
   }
   /**
@@ -7442,6 +7483,24 @@ export class BaseballEngine {
   get rivalLook(): Look | null {
     const l = this.versus?.sheet.look;
     return l ? cleanLook(l) : null;
+  }
+  /** Gives the gifts this career has not got yet; returns what was given (for a message). */
+  claimGifts() {
+    const c = this.state.career;
+    if (!c.created || this.versus || (c.day <= 1 && !c.games)) return [];
+    const got: string[] = [];
+    for (const g of GIFTS) {
+      if (c.gifts?.includes(g.id)) continue;
+      c.gifts = [...(c.gifts ?? []), g.id];
+      c.xp += g.xp;
+      c.history = [`${c.day}일차 · ${g.text} +${g.xp} XP`, ...c.history].slice(0, 12);
+      got.push(`${g.text}으로 경험치 ${g.xp} XP를 받았어요!`);
+    }
+    if (got.length) {
+      this.persist();
+      this.emit();
+    }
+    return got;
   }
   ownsSkin(id: string) {
     return !!this.state.career.skins?.includes(id);

@@ -30,6 +30,7 @@ import {
   STAT_INFO,
   STAT_NAMES,
   XP,
+  GIFTS,
   HOME_LINEUP,
   validOrder,
   ALL_PITCHES,
@@ -3551,6 +3552,72 @@ check("MLB teammates keep their own ratings (200–250) when the team grows; the
       assert(grown[i][key] <= 250, "the majors cap is 250");
     }
   assert(grown.some((p) => p.contact > 200), "not all squashed to 200");
+});
+check("불가능 MLB: the rival ace's fastball tops out at 179 (the weakest 169), offspeed down to about 30 slower, a bigger pitch mix; other tiers unchanged", () => {
+  const mlb = (difficulty, n) => {
+    const c = newCareer();
+    c.created = true;
+    c.team = "triples";
+    c.stage = "pro";
+    c.club = "triples";
+    c.proGoal = true;
+    c.league = "mlb";
+    c.mlbClub = MLB_TEAMS[0].id;
+    const g = new BaseballEngine(c, seed(n));
+    g.setDifficulty(difficulty);
+    g.start("match");
+    return g;
+  };
+  const sample = (g) => {
+    const kinds = new Set(),
+      speeds = [];
+    for (let i = 0; i < 600; i++) {
+      g.state.phase = "ready";
+      g.state.flight = null;
+      g.state.energy = 100;
+      g.state.pitchCount = [0, 0];
+      g.launch(true);
+      kinds.add(g.state.flight.pitch);
+      speeds.push(g.state.flight.speed);
+    }
+    return { kinds, max: Math.max(...speeds), min: Math.min(...speeds), fast: speeds.filter((_, i) => true) };
+  };
+  const imp = sample(mlb("impossible", 21)),
+    hard = sample(mlb("hard", 21));
+  const fastball = mlb("impossible", 21).teamStrength(false).velocity;
+  assert(fastball >= 169 && fastball <= RULES.impossibleMlb.fastball, `fastball ${fastball}`);
+  assert(imp.max <= 184 && imp.max >= 170, `fastest pitch ${imp.max}`);
+  assert(imp.max - imp.min >= 25 && imp.max - imp.min <= 60, `spread ${imp.max - imp.min} km/h`);
+  assert(imp.kinds.size >= 9, `pitch kinds ${imp.kinds.size}`);
+  assert(hard.kinds.size <= 6, `other difficulties keep the old mix (${hard.kinds.size})`);
+  assert(hard.max < imp.max, `hard tops out lower (${hard.max} vs ${imp.max})`);
+  assert(!imp.kinds.has("eephus"), "the 60 km/h lob stays out");
+});
+check("경험치 쌓기: one action for XP without a minigame; one-time XP gift for played careers only", () => {
+  const c = newCareer();
+  c.created = true;
+  c.name = "나";
+  const g = new BaseballEngine(c, seed(80));
+  const e0 = c.energy,
+    f0 = c.form,
+    a0 = c.actions,
+    x0 = c.xp;
+  const r = g.train("xpwork");
+  assert(r.ok, r.message);
+  assert.equal(c.xp, x0 + XP.drill);
+  assert.equal(c.actions, a0 - 1);
+  assert(c.energy < e0 && c.energy >= e0 - 11, "a little energy");
+  assert.equal(c.form, f0, "no condition change");
+  assert(XP.drill < 60, "slower than training a stat with XP");
+  // The gift: nothing for a brand-new career, once for one that has played.
+  assert.deepEqual(g.claimGifts(), [], "a fresh career gets nothing");
+  c.day = 3;
+  const gifts = g.claimGifts();
+  assert.equal(gifts.length, GIFTS.length);
+  assert.equal(c.xp, x0 + XP.drill + GIFTS.reduce((a, b) => a + b.xp, 0));
+  assert.deepEqual(g.claimGifts(), [], "only once");
+  assert(GIFTS.some((x) => x.xp === 1000), "the bug compensation is 1000 XP");
+  assert.deepEqual(JSON.parse(JSON.stringify(c)).gifts, GIFTS.map((x) => x.id), "remembered in the save");
 });
 check("Multiplayer room: meeting by code, each side's ping, round trip and clock offset, third player, silence, leaving", () => {
   // A tiny network: messages arrive after the senders' pings (server in the middle).

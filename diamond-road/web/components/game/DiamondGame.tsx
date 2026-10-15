@@ -102,6 +102,7 @@ import {
   PINE_TAR_PENALTY,
   CHEER_DROP,
   RULES,
+  XP,
   isDecisive,
   weatherOf,
   STAT_NAMES,
@@ -1133,6 +1134,14 @@ const trainings: {
     cost: 6,
   },
   {
+    id: "xpwork",
+    icon: Sparkles,
+    name: "경험치 쌓기",
+    desc: "버튼 한 번, 미니게임 없이 기록 정리",
+    gain: `경험치 +${XP.drill}`,
+    cost: 10,
+  },
+  {
     id: "rest",
     icon: Moon,
     name: "충분한 휴식",
@@ -1258,7 +1267,8 @@ function LifeView({
             key={t.id}
             disabled={c.energy < t.cost || live || out}
             onClick={() => {
-              if (t.id !== "rest") {
+              // Only the trainings with a minigame open it; rest and 경험치 쌓기 are one click.
+              if (TRAINING_GAMES[t.id]) {
                 setGame(t.id);
                 return;
               }
@@ -1280,11 +1290,13 @@ function LifeView({
               </dl>
             ) : (
               <dl className="training-stat">
-                <dt>{t.id === "rest" ? "현재 체력" : "컨디션"}</dt>
+                <dt>{t.id === "rest" ? "현재 체력" : t.id === "xpwork" ? "보유 경험치" : "컨디션"}</dt>
                 <dd>
                   {t.id === "rest"
                     ? `${Math.round(c.energy)} / 100 · 투구용: 낮으면 구속·제구가 떨어지고 폭투가 늘어요`
-                    : `${c.form} / 100 · 높을수록 타이밍 창·배트 범위·주력·훈련 효과가 커져요`}
+                    : t.id === "xpwork"
+                      ? `${c.xp} XP · 능력치·구종·스킨을 사는 데 써요 (능력치 훈련보다는 느려요)`
+                      : `${c.form} / 100 · 높을수록 타이밍 창·배트 범위·주력·훈련 효과가 커져요`}
                 </dd>
               </dl>
             )}
@@ -2790,6 +2802,10 @@ export default function DiamondGame() {
       sfx.current.close();
     };
   }, [engine]);
+  // One-time XP gifts (bug compensation) arrive when the game opens with a played career.
+  useEffect(() => {
+    for (const m of engine.claimGifts()) toast.success(m, { duration: 9000 });
+  }, [engine, s.career.created, s.career.name, s.mode]);
   // A tab left open keeps running the old version. Every 2 minutes, compare this page's script
   // with the one now on the site and offer a reload when a new build is out.
   useEffect(() => {
