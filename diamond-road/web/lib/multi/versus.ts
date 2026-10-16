@@ -16,6 +16,11 @@
  * until both have taken all their pitches (or one can no longer catch up). Derby results are
  * not sent to the win/loss board.
  *
+ * Lost messages: a turn is resent until the new batter's snapshots arrive (a lost `vs-turn`
+ * left both sides waiting for each other). Turns are numbered (`k`), so a resent one is done
+ * once. A mirror that hears nothing for a while asks (`vs-sync`): the side that knows a newer
+ * turn sends it again, and if both are waiting the batter of the last turn takes the bat.
+ *
  * Driven by `pump()` (every frame in the browser, by hand in the checks); time comes from the
  * injected clock, like the room.
  */
@@ -59,10 +64,22 @@ export type VersusInfo = {
   result: { mine: number; theirs: number; reason?: string } | null;
   report: ReportState;
 };
-type Turn = { over: boolean; inning: number; batter: "host" | "guest"; n?: number };
+type Turn = { over: boolean; inning: number; batter: "host" | "guest"; n?: number; k?: number };
+const FIRST_TURN: Turn = { over: false, inning: 1, batter: "guest", k: 0 };
 
 /** Snapshot rate while the ball is in play (ms) and otherwise (keep-alive). */
-export const VERSUS = { liveEvery: 50, idleEvery: 400, interp: 110, lostAfter: 40000 };
+export const VERSUS = {
+  liveEvery: 50,
+  idleEvery: 400,
+  interp: 110,
+  lostAfter: 40000,
+  /** Resend a turn every this many ms until the new batter is heard (at most turnTries). */
+  turnRetry: 1200,
+  turnTries: 15,
+  /** A mirror with no snapshot for this long asks where the match is (then every syncEvery). */
+  quiet: 5000,
+  syncEvery: 3000,
+};
 
 const LERP = new Set(["x", "y", "z", "progress", "elapsed"]);
 /** Blend two snapshots: positions and times in between, everything else from the newer. */
@@ -111,8 +128,13 @@ export class Versus {
       }) => Promise<ReportState>)
     | null = null;
   private opponentId: string | undefined;
-  /** Derby: the last turn number handled (a turn sent again after a refresh is skipped). */
-  private derbyN = -1;
+  /** The last turn handled (sent or received) and its number. */
+  private turnK = 0;
+  private lastTurn: Turn = FIRST_TURN;
+  /** A turn sent and not yet confirmed by the new batter's snapshots. */
+  private pending: { t: Turn; at: number; tries: number } | null = null;
+  private lastSnapAt = 0;
+  private lastSyncAt = -1e9;
 
   constructor(engine: BaseballEngine, room: Room, now: () => number = () => performance.now()) {
     this.engine = engine;
@@ -190,6 +212,8 @@ export class Versus {
       opponent: this.info.opponent,
       opponentId: this.opponentId,
       seq: this.seq,
+      turnK: this.turnK,
+      lastTurn: this.lastTurn,
       engine: e,
     };
   }
@@ -205,7 +229,10 @@ export class Versus {
     this.lostSince = null;
     this.graceUntil = this.now() + VERSUS.lostAfter;
     this.resumePending = true;
-    this.derbyN = -1;
+    this.turnK = typeof d.turnK === "number" ? d.turnK : 0;
+    this.lastTurn = d.lastTurn ?? FIRST_TURN;
+    this.pending = null;
+    this.lastSnapAt = this.now();
     this.engine.versusRestore(d.engine, (p: RemotePitch) =>
       this.room.send("vs-throw", { matchId: this.info.matchId, p }),
     );
@@ -238,7 +265,11 @@ export class Versus {
     this.handed = false;
     this.buffer = [];
     this.lostSince = null;
-    this.derbyN = -1;
+    this.turnK = 0;
+    this.lastTurn = FIRST_TURN;
+    this.pending = null;
+    this.lastSnapAt = this.now();
+    this.lastSyncAt = -1e9;
     const pick = this.info.derby;
     this.engine.beginVersus({
       home,
@@ -310,6 +341,9 @@ export class Versus {
       const seq = Number(d.seq);
       if (!(seq > this.lastSeq)) return;
       this.lastSeq = seq;
+      this.lastSnapAt = this.now();
+      // The new batter is playing: the turn we handed over has arrived.
+      if (this.pending && !this.pending.t.over) this.pending = null;
       const snap = d.snap as VersusSnap;
       if (snap.phase === "inplay") {
         this.buffer = [...this.buffer, { at: this.now(), snap }].slice(-4);
@@ -321,9 +355,9 @@ export class Versus {
     } else if (m.e === "vs-turn") {
       const t = d as unknown as Turn,
         meBat = (t.batter === "host") === (this.room.role === "host");
-      // Derby: each turn has its number; one already handled is not done again.
-      if (v.derby) {
-        if (typeof t.n === "number" && t.n <= this.derbyN && !t.over) return;
+      // Numbered turns: one already handled (a resend) is not done again.
+      if (typeof t.k === "number") {
+        if (t.k <= this.turnK) return;
       } else if (
         !t.over &&
         v.mirror === !meBat &&
@@ -340,6 +374,8 @@ export class Versus {
         inning: this.engine.state.inning,
       });
       this.lastPhase = "";
+    } else if (m.e === "vs-sync") {
+      this.sync(Number(d.k), !!d.mirror);
     } else if (m.e === "vs-where") {
       // Both think the same side bats: the one who came back takes the other side.
       if (d.mirror === v.mirror)
@@ -355,6 +391,7 @@ export class Versus {
 
   /** Called every frame: connection watch, snapshots, the end of a half, smoothing. */
   pump() {
+    this.resendTurn();
     if (this.info.stage !== "playing") return;
     const now = this.now(),
       v = this.engine.versus,
@@ -388,10 +425,22 @@ export class Versus {
       if (s.phase === "between" && !this.handed) {
         this.handed = true;
         this.sendSnap(now);
-        const t = this.decideTurn();
+        const t = { ...this.decideTurn(), k: this.turnK + 1 };
         this.room.send("vs-turn", { matchId: this.info.matchId, ...t });
+        // Handed to the other player (or the end): sent again until he is heard.
+        const meNext = (t.batter === "host") === (this.room.role === "host");
+        if (t.over || !meNext) this.pending = { t, at: now, tries: 1 };
         this.applyTurn(t);
+        this.lastSnapAt = now;
       }
+    } else if (
+      status === "ready" &&
+      now - this.lastSnapAt > VERSUS.quiet &&
+      now - this.lastSyncAt > VERSUS.syncEvery
+    ) {
+      // Waiting and hearing nothing: ask where the match is.
+      this.lastSyncAt = now;
+      this.room.send("vs-sync", { matchId: this.info.matchId, k: this.turnK, mirror: true });
     } else if (this.buffer.length > 1) {
       // Ball in play: shown INTERP ms behind, blended between the two snapshots around then.
       const at = now - VERSUS.interp,
@@ -444,9 +493,57 @@ export class Versus {
       return { over: last && host > guest, inning: s.inning, batter: "host" };
     return { over: last, inning: s.inning + 1, batter: "guest" };
   }
+  /** A turn handed over and not confirmed yet: send it again (a lost one froze both sides). */
+  private resendTurn() {
+    const p = this.pending,
+      now = this.now();
+    if (!p || now - p.at < VERSUS.turnRetry) return;
+    if (p.tries >= VERSUS.turnTries) {
+      this.pending = null;
+      return;
+    }
+    p.tries++;
+    p.at = now;
+    this.room.send("vs-turn", { matchId: this.info.matchId, ...p.t });
+  }
+  /** The other side asks where the match is (it heard nothing for a while). */
+  private sync(theirK: number, theirMirror: boolean) {
+    const v = this.engine.versus;
+    if (!v || !Number.isFinite(theirK)) return;
+    const now = this.now(),
+      askBack = () => {
+        if (now - this.lastSyncAt < 500) return;
+        this.lastSyncAt = now;
+        this.room.send("vs-sync", { matchId: this.info.matchId, k: this.turnK, mirror: v.mirror });
+      };
+    if (this.turnK > theirK) {
+      // He missed our last turn: send it again.
+      this.room.send("vs-turn", { matchId: this.info.matchId, ...this.lastTurn });
+      return;
+    }
+    if (this.turnK < theirK) {
+      askBack();
+      return;
+    }
+    if (!v.mirror) {
+      // We are batting: send a snapshot at once.
+      this.lastPhase = "";
+      return;
+    }
+    if (!theirMirror) return;
+    // Both waiting on the same turn: its batter takes the bat.
+    const meBat = (this.lastTurn.batter === "host") === (this.room.role === "host");
+    if (meBat) {
+      this.engine.versusTurn(true, this.lastTurn.inning);
+      this.buffer = [];
+      this.lastPhase = "";
+      this.pending = null;
+    } else askBack();
+  }
   private applyTurn(t: Turn) {
     if (!this.engine.versus) return;
-    if (typeof t.n === "number") this.derbyN = Math.max(this.derbyN, t.n);
+    if (typeof t.k === "number") this.turnK = Math.max(this.turnK, t.k);
+    this.lastTurn = t;
     this.handed = false;
     this.buffer = [];
     if (t.over) {

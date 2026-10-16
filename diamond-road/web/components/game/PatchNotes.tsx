@@ -17,6 +17,14 @@ type Patch = { version: string; date: string; title: string; items: string[] };
 
 export const PATCHES: Patch[] = [
   {
+    version: "v14.3",
+    date: "10/16",
+    title: "멀티 멈춤 버그 수정",
+    items: [
+      "멀티 대결·홈런 더비가 가끔 멈추던 문제를 고쳤어요. 공수 교대(차례 넘기기) 신호가 인터넷에서 한 번 사라지면 두 사람이 서로를 기다리며 멈췄어요. 이제 신호가 도착할 때까지 다시 보내고, 한쪽이 조용하면 자동으로 다시 맞춰요. 새로고침하지 않아도 돼요.",
+    ],
+  },
+  {
     version: "v14.2",
     date: "10/15",
     title: "멀티 홈런 더비",

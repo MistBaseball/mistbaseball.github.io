@@ -4146,6 +4146,98 @@ check("Home-run derby: the host's pitch and count, one pitch each in turn, same 
   gv.quit();
   assert.deepEqual([JSON.stringify(he.state.career), JSON.stringify(ge.state.career)], before, "careers untouched");
 });
+check("Versus: a lost turn message no longer freezes both sides (resent until heard, quiet side asks), the end too", () => {
+  let T = 0,
+    dropTurns = 20,
+    dropOver = 3;
+  const queue = [],
+    rooms = new Map();
+  const net = (ping) => (code, h) => {
+    const me = { h, ping };
+    if (!rooms.has(code)) rooms.set(code, new Set());
+    rooms.get(code).add(me);
+    queue.push({ at: T, fn: () => h.onStatus("open") });
+    return {
+      send(m) {
+        const c = JSON.parse(JSON.stringify(m));
+        if (m.e === "echo") queue.push({ at: T + ping, fn: () => h.onMessage(c) });
+        // The network loses the first 20 turn messages, and the first 3 "it is over" ones.
+        if (m.e === "vs-turn" && !m.d.over && dropTurns > 0) return void dropTurns--;
+        if (m.e === "vs-turn" && m.d.over && dropOver > 0) return void dropOver--;
+        for (const o of rooms.get(code)) if (o !== me) queue.push({ at: T + (ping + o.ping) / 2, fn: () => o.h.onMessage(c) });
+      },
+      close() {},
+    };
+  };
+  const advance = (ms) => {
+    const end = T + ms;
+    for (;;) {
+      queue.sort((a, b) => a.at - b.at);
+      if (!queue.length || queue[0].at > end) break;
+      const e = queue.shift();
+      T = Math.max(T, e.at);
+      e.fn();
+    }
+    T = end;
+  };
+  const mk = (name) => {
+    const c = newCareer();
+    Object.assign(c, { created: true, team: "triples", name });
+    c.stats.power = c.stats.contact = 100;
+    return c;
+  };
+  const he = new BaseballEngine(mk("방장"), seed(95)),
+    ge = new BaseballEngine(mk("손님"), seed(96));
+  const hr = new Room("LOSSY", "host", "방장", net(40), () => T, false),
+    gr = new Room("LOSSY", "guest", "손님", net(90), () => T, false);
+  advance(1);
+  hr.tick();
+  gr.tick();
+  advance(500);
+  const hv = new Versus(he, hr, () => T),
+    gv = new Versus(ge, gr, () => T);
+  assert(hv.invite(3, "normal", { pitch: "fastball", count: 5 }));
+  advance(200);
+  assert(gv.accept());
+  advance(300);
+  const bat = (e) => {
+    const s = e.state,
+      f = s.flight;
+    if (!e.versus || e.versus.mirror || s.phase !== "flight" || !f || f.swung) return;
+    const h = f.hint ?? f.target;
+    e.setAim(h.x, h.y);
+    if (f.elapsed >= f.visualDuration * 0.92) e.swing();
+  };
+  let guard = 0;
+  while ((hv.info.stage === "playing" || gv.info.stage === "playing") && guard++ < 120000) {
+    bat(he);
+    bat(ge);
+    he.tick(1 / 60);
+    ge.tick(1 / 60);
+    advance(1000 / 60);
+    if (guard % 6 === 0) {
+      hr.tick();
+      gr.tick();
+    }
+    hv.pump();
+    gv.pump();
+  }
+  assert.equal(dropTurns, 0, "turn messages were lost");
+  assert.equal(dropOver, 0, "the end message was lost too");
+  assert.equal(hv.info.stage, "over", `host ${hv.info.stage} after ${Math.round(T / 1000)} s`);
+  assert.equal(gv.info.stage, "over", `guest ${gv.info.stage}`);
+  const a = hv.info.result,
+    b = gv.info.result;
+  assert(!a.reason && !b.reason, "played to the end");
+  assert.deepEqual([a.mine, a.theirs], [b.theirs, b.mine]);
+  // Every pitch counted once (an early end is fine when one can no longer catch up).
+  const [x, y] = he.state.derby.taken,
+    [hx, hy] = he.state.derby.hr;
+  assert(x <= 5 && y <= 5, `no pitch twice: ${x}, ${y}`);
+  assert(Math.abs(x - y) <= 1, `turns alternate: ${x}, ${y}`);
+  if (x < 5 || y < 5) assert(hx + (5 - x) < hy || hy + (5 - y) < hx, `early end only when decided (${hx}:${hy})`);
+  assert.deepEqual(ge.state.derby.taken, [y, x], "both screens count the same");
+});
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();
   c.created = true;
