@@ -30,7 +30,7 @@ import {
   type Difficulty,
   type GameState,
 } from "@/lib/game/engine";
-import type { DerbyPick, ReportState, VersusInfo } from "@/lib/multi/versus";
+import { STAKES, type DerbyPick, type ReportState, type VersusInfo } from "@/lib/multi/versus";
 import { RIVAL_LEAGUE } from "@/lib/multi/rivals";
 import {
   LOBBY_LIMIT,
@@ -283,7 +283,9 @@ function VersusControls({
     [level, setLevel] = useState<Difficulty>(vs.level),
     [kind, setKind] = useState<"match" | "derby">(vs.derby ? "derby" : "match"),
     [pitch, setPitch] = useState<string>(vs.derby?.pitch ?? "fastball"),
-    [count, setCount] = useState<number>(vs.derby?.count ?? 10);
+    [count, setCount] = useState<number>(vs.derby?.count ?? 10),
+    [stake, setStake] = useState<number>(vs.stake ?? 0),
+    myXp = engine.versus ? engine.versusXp : engine.state.career.xp;
   if (vs.stage === "invited")
     return (
       <div className="vs-invite">
@@ -291,12 +293,23 @@ function VersusControls({
           {vs.opponent}님이 {vs.derby ? derbyLabel(vs.derby) : "대결"}을 신청했어요! (난이도{" "}
           {DIFFICULTIES.find((d) => d.id === vs.level)?.label ?? "보통"})
         </b>
+        {vs.stake > 0 && (
+          <p className="stake-note">
+            걸린 경험치 <b>{vs.stake} XP</b> · 이기면 +{vs.stake * 2} XP, 비기면 돌려받고, 지면
+            잃어요. (내 경험치 {myXp} XP)
+          </p>
+        )}
         <div>
           <button
             className="primary-button"
+            disabled={vs.stake > myXp}
             onClick={() => {
               if (!currentVersus()?.accept())
-                toast.error("진행 중인 시즌 경기를 끝낸 뒤에 받을 수 있어요");
+                toast.error(
+                  vs.stake > myXp
+                    ? "걸린 경험치보다 내 경험치가 적어요"
+                    : "진행 중인 시즌 경기를 끝낸 뒤에 받을 수 있어요",
+                );
             }}
           >
             수락
@@ -361,6 +374,25 @@ function VersusControls({
               ))}
             </div>
           </div>
+          <div className="creation-difficulty" role="radiogroup" aria-label="걸 경험치">
+            <span>
+              경험치 걸기 <small>둘 다 같은 만큼 걸고, 이긴 사람이 모두 가져가요 · 내 {myXp} XP</small>
+            </span>
+            <div>
+              {STAKES.map((n) => (
+                <button
+                  key={n}
+                  role="radio"
+                  aria-checked={stake === n}
+                  disabled={n > myXp}
+                  className={`subtle-button ${stake === n ? "on" : ""}`}
+                  onClick={() => setStake(n)}
+                >
+                  {n ? `${n} XP` : "안 걸기"}
+                </button>
+              ))}
+            </div>
+          </div>
           <label className="derby-pitch">
             <span>
               던질 공 <small>기계가 던져요 · 두 사람에게 같은 순서로</small>
@@ -400,11 +432,15 @@ function VersusControls({
         onClick={() => {
           const why = matchRefusal(stats);
           if (why) toast.error(why);
-          else if (!currentVersus()?.invite(3, level, derby))
-            toast.error("지금은 대결을 신청할 수 없어요");
+          else if (!currentVersus()?.invite(3, level, derby, derby ? stake : 0))
+            toast.error(
+              derby && stake > myXp ? "내 경험치가 모자라요" : "지금은 대결을 신청할 수 없어요",
+            );
         }}
       >
-        {derby ? `홈런 더비 신청 (${count}구)` : "대결 신청 (3이닝)"}
+        {derby
+          ? `홈런 더비 신청 (${count}구${stake ? ` · ${stake} XP 걸기` : ""})`
+          : "대결 신청 (3이닝)"}
       </button>
       {busy && <small className="multi-note">진행 중인 시즌 경기를 끝내야 대결할 수 있어요.</small>}
     </>
@@ -456,9 +492,19 @@ export function VersusOverlay({
         </p>
       )}
       {REPORT_TEXT[report] && <p className="multi-note">{REPORT_TEXT[report]}</p>}
+      {vs?.payout && (
+        <p className={`stake-result ${vs.payout.gain > vs.stake ? "win" : vs.payout.gain ? "even" : "lose"}`}>
+          {vs.payout.text} · {vs.payout.gain ? `+${vs.payout.gain} XP` : `−${vs.stake} XP`}
+        </p>
+      )}
       {vs?.stage === "invited" ? (
         <div className="vs-invite">
           <b>{vs.opponent}님이 한 판 더 하재요!</b>
+          {vs.stake > 0 && (
+            <p className="stake-note">
+              걸린 경험치 <b>{vs.stake} XP</b> (내 경험치 {engine.versusXp} XP)
+            </p>
+          )}
           <div>
             <button className="primary-button" onClick={() => currentVersus()?.accept()}>
               수락
@@ -472,7 +518,10 @@ export function VersusOverlay({
         <button
           className="primary-button"
           disabled={vs?.stage === "inviting"}
-          onClick={() => currentVersus()?.invite(3, vs?.level, vs?.derby ?? null)}
+          onClick={() => {
+            if (!currentVersus()?.invite(3, vs?.level, vs?.derby ?? null, vs?.stake ?? 0))
+              toast.error("내 경험치가 모자라 같은 판돈으로 다시 할 수 없어요");
+          }}
         >
           {vs?.stage === "inviting" ? "상대 수락 기다리는 중…" : "한 판 더"}
         </button>
@@ -494,7 +543,8 @@ export function VersusOverlay({
 
 /** Side panel in a home-run derby: both tallies, the last pitch, whose turn it is. */
 export function DerbyPanel({ engine, s }: { engine: BaseballEngine; s: GameState }) {
-  const d = s.derby;
+  const d = s.derby,
+    vs = useVersus();
   if (!d) return null;
   const myTurn = !!engine.versus && !engine.versus.mirror,
     row = (who: string, hr: number, taken: number, on: boolean) => (
@@ -514,6 +564,11 @@ export function DerbyPanel({ engine, s }: { engine: BaseballEngine; s: GameState
           {pitchName(d.pitch)} · {d.count}구씩
         </small>
       </div>
+      {vs && vs.stake > 0 && (
+        <p className="stake-note">
+          걸린 경험치 <b>{vs.stake} XP</b> · 이기면 +{vs.stake * 2} XP
+        </p>
+      )}
       {row(`나 · ${engine.teams[1]}`, d.hr[1], d.taken[1], myTurn)}
       {row(`상대 · ${engine.teams[0]}`, d.hr[0], d.taken[0], !myTurn)}
       <p className="multi-note">

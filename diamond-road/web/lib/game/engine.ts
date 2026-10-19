@@ -1876,6 +1876,8 @@ export type Career = {
   skins?: string[];
   /** One-time gifts already received (ids in `GIFTS`). */
   gifts?: string[];
+  /** XP bets on multiplayer matches (by match id): taken at the start, paid once at the end. */
+  wagers?: { id: string; stake: number; settled: boolean }[];
   hofId?: string;
   hofSecret?: string;
   /** Ranking nickname and #tag of this career (travels with the save code). */
@@ -2139,6 +2141,8 @@ export type DerbyState = {
   last: string;
 };
 export const DERBY_COUNTS = [5, 10, 15, 20] as const;
+/** XP a home-run derby can be played for (each player puts this in; the winner takes both). */
+export const DERBY_STAKES = [0, 100, 300, 500, 1000, 2000] as const;
 /** The machine: a firm, accurate arm (velocity 80 ≈ 144 km/h four-seam) that throws strikes. */
 export const DERBY_MACHINE = { velocity: 80, control: 100, movement: 55, energy: 100, effort: 90, form: 70 };
 /** A valid derby set-up from anything (an invitation from the other player), or null. */
@@ -6648,8 +6652,17 @@ export class BaseballEngine {
     derby?: DerbySpec | null;
     onThrow: (p: RemotePitch) => void;
   }) {
-    const saved = JSON.stringify(this.state.career),
+    // Another match right after one (한 판 더): the career kept aside from that one, with its
+    // bet paid, not the one in play.
+    const saved = this.versus ? this.versus.saved : JSON.stringify(this.state.career),
       difficulty = this.versus?.difficulty ?? this.state.difficulty;
+    if (this.versus) {
+      try {
+        this.state.career = JSON.parse(saved) as Career;
+      } catch {
+        /* keep the one in memory */
+      }
+    }
     this.versus = null;
     // Our teammates as they are now (members 1–8), before versus takes over the rosters.
     const ours = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => this.member(k));
@@ -7014,6 +7027,62 @@ export class BaseballEngine {
         ? `홈런 더비 · ${this.teams[1]} ${mine}개 : ${theirs}개 ${this.teams[0]}`
         : `멀티 대결 · ${this.teams[1]} ${mine} : ${theirs} ${this.teams[0]}`;
     this.emit();
+  }
+  /** The career kept aside for after the match (or the one in play outside versus). */
+  private asideCareer(): Career {
+    const v = this.versus;
+    if (!v) return this.state.career;
+    try {
+      return JSON.parse(v.saved) as Career;
+    } catch {
+      return this.state.career;
+    }
+  }
+  /** Writes the kept-aside career back (and to this browser's save at once). */
+  private keepAside(c: Career) {
+    const v = this.versus;
+    if (!v) return;
+    v.saved = JSON.stringify(c);
+    try {
+      if (this.loaded && typeof localStorage !== "undefined")
+        localStorage.setItem("diamond-road-career-v1", v.saved);
+    } catch {
+      /* private mode: kept for this visit */
+    }
+  }
+  /** XP of the player's own career during a versus match (bets included). */
+  get versusXp() {
+    return this.asideCareer().xp;
+  }
+  /**
+   * Versus bet: takes `stake` XP from the player's career when the match starts (saved at
+   * once, so closing the tab does not get it back). Once per match id. False if he has not got
+   * that much.
+   */
+  wagerStake(matchId: string, stake: number) {
+    if (!this.versus || !(stake > 0)) return false;
+    const c = this.asideCareer(),
+      bets = c.wagers ?? [];
+    if (bets.some((w) => w.id === matchId)) return true;
+    if (c.xp < stake) return false;
+    c.xp -= stake;
+    c.wagers = [...bets, { id: matchId, stake, settled: false }].slice(-20);
+    c.history = [`${c.day}일차 · 홈런 더비에 ${stake} XP 걸기`, ...c.history].slice(0, 12);
+    this.keepAside(c);
+    return true;
+  }
+  /** Versus bet: pays `gain` XP for this match (once). Returns what was paid (0 if done). */
+  wagerSettle(matchId: string, gain: number, text: string) {
+    if (!this.versus) return 0;
+    const c = this.asideCareer(),
+      w = c.wagers?.find((x) => x.id === matchId);
+    if (!w || w.settled) return 0;
+    w.settled = true;
+    const g = Math.max(0, Math.round(gain));
+    c.xp += g;
+    c.history = [`${c.day}일차 · ${text}${g ? ` +${g} XP` : ""}`, ...c.history].slice(0, 12);
+    this.keepAside(c);
+    return g;
   }
   /** Leaves versus play: the career is exactly as before, a new single-player match is set. */
   endVersus() {

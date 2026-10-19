@@ -4238,6 +4238,164 @@ check("Versus: a lost turn message no longer freezes both sides (resent until he
   if (x < 5 || y < 5) assert(hx + (5 - x) < hy || hy + (5 - y) < hx, `early end only when decided (${hx}:${hy})`);
   assert.deepEqual(ge.state.derby.taken, [y, x], "both screens count the same");
 });
+check("Derby bets: both put XP in at the start, the winner takes both, a draw gives back; giving up loses it, a dropped line refunds; paid once, also after a rematch", () => {
+  const setup = (xpHost, xpGuest, n) => {
+    let T = 0;
+    const queue = [],
+      rooms = new Map(),
+      cut = { on: false };
+    const net = (ping) => (code, h) => {
+      const me = { h, ping };
+      if (!rooms.has(code)) rooms.set(code, new Set());
+      rooms.get(code).add(me);
+      queue.push({ at: T, fn: () => h.onStatus("open") });
+      return {
+        send(m) {
+          if (cut.on) return;
+          const c = JSON.parse(JSON.stringify(m));
+          if (m.e === "echo") queue.push({ at: T + ping, fn: () => h.onMessage(c) });
+          for (const o of rooms.get(code)) if (o !== me) queue.push({ at: T + (ping + o.ping) / 2, fn: () => o.h.onMessage(c) });
+        },
+        close() {},
+      };
+    };
+    const advance = (ms) => {
+      const end = T + ms;
+      for (;;) {
+        queue.sort((a, b) => a.at - b.at);
+        if (!queue.length || queue[0].at > end) break;
+        const e = queue.shift();
+        T = Math.max(T, e.at);
+        e.fn();
+      }
+      T = end;
+    };
+    const mk = (name, xp) => {
+      const c = newCareer();
+      Object.assign(c, { created: true, team: "triples", name, xp });
+      c.stats.power = c.stats.contact = 100;
+      return c;
+    };
+    const he = new BaseballEngine(mk("방장", xpHost), seed(n)),
+      ge = new BaseballEngine(mk("손님", xpGuest), seed(n + 1));
+    const hr = new Room("BET" + n, "host", "방장", net(40), () => T, false),
+      gr = new Room("BET" + n, "guest", "손님", net(70), () => T, false);
+    advance(1);
+    hr.tick();
+    gr.tick();
+    advance(500);
+    const hv = new Versus(he, hr, () => T),
+      gv = new Versus(ge, gr, () => T);
+    const step = (k = 1) => {
+      for (let i = 0; i < k; i++) {
+        for (const e of [he, ge]) {
+          const s = e.state,
+            f = s.flight;
+          if (e.versus && !e.versus.mirror && s.phase === "flight" && f && !f.swung) {
+            const h = f.hint ?? f.target;
+            e.setAim(h.x, h.y);
+            if (f.elapsed >= f.visualDuration * 0.92) e.swing();
+          }
+        }
+        he.tick(1 / 60);
+        ge.tick(1 / 60);
+        advance(1000 / 60);
+        if (i % 6 === 0) {
+          hr.tick();
+          gr.tick();
+        }
+        hv.pump();
+        gv.pump();
+      }
+    };
+    const start = (stake) => {
+      const ok = hv.invite(3, "normal", { pitch: "fastball", count: 5 }, stake);
+      advance(200);
+      return ok && gv.accept() && (advance(300), true);
+    };
+    const finish = () => {
+      let g = 0;
+      while ((hv.info.stage === "playing" || gv.info.stage === "playing") && g++ < 60000) step();
+    };
+    return { he, ge, hv, gv, start, finish, step, cut, advance };
+  };
+  const xpAfter = (e) => (e.versus ? e.versusXp : e.state.career.xp);
+  // A full derby for 300 XP each.
+  {
+    const m = setup(1000, 1000, 101);
+    assert.equal(m.gv.info.stake, 0);
+    assert(m.start(300));
+    assert.equal(m.gv.info.stake, 300, "the guest sees the stake");
+    assert.equal(xpAfter(m.he), 700, "taken at the start");
+    assert.equal(xpAfter(m.ge), 700);
+    m.finish();
+    const a = m.hv.info.result,
+      h = xpAfter(m.he),
+      g = xpAfter(m.ge);
+    if (a.mine > a.theirs) assert.deepEqual([h, g], [1300, 700], "host won both stakes");
+    else if (a.mine < a.theirs) assert.deepEqual([h, g], [700, 1300], "guest won both stakes");
+    else assert.deepEqual([h, g], [1000, 1000], "a draw gives the stakes back");
+    assert.equal(h + g, 2000, "no XP made or lost overall");
+    // Rematch: starts from the paid career; the stake is taken again, once.
+    const h0 = h,
+      g0 = g;
+    m.advance(500);
+    m.hv.invite(3, "normal", { pitch: "fastball", count: 5 }, 100);
+    m.advance(200);
+    assert(m.gv.accept());
+    m.advance(300);
+    assert.equal(xpAfter(m.he), h0 - 100, "the rematch stake comes off the paid XP");
+    assert.equal(xpAfter(m.ge), g0 - 100);
+    m.finish();
+    assert.equal(xpAfter(m.he) + xpAfter(m.ge), 2000);
+    m.hv.quit();
+    m.gv.quit();
+    assert.equal(m.he.state.career.xp + m.ge.state.career.xp, 2000, "the career after versus has it");
+    assert.equal(m.he.state.career.wagers.length, 2);
+    assert(m.he.state.career.wagers.every((w) => w.settled));
+  }
+  // The guest gives up in the middle: he loses his stake, the host takes the pot.
+  {
+    const m = setup(1000, 1000, 103);
+    assert(m.start(500));
+    m.step(400);
+    m.gv.quit();
+    m.step(30);
+    assert.equal(m.ge.state.career.xp, 500, "giving up loses the stake");
+    assert.equal(xpAfter(m.he), 1500, "the other one wins it");
+    assert.match(m.hv.info.payout.text, /포기/);
+  }
+  // The line drops for good: both get their stake back.
+  {
+    const m = setup(1000, 1000, 105);
+    assert(m.start(300));
+    m.step(300);
+    m.cut.on = true;
+    m.step(60 * 50);
+    assert.equal(m.hv.info.stage, "over");
+    assert.equal(m.gv.info.stage, "over");
+    assert.deepEqual([xpAfter(m.he), xpAfter(m.ge)], [1000, 1000], "refunded on both sides");
+  }
+  // Not enough XP: the host cannot offer it, the guest cannot take it.
+  {
+    const m = setup(200, 1000, 107);
+    assert.equal(m.hv.invite(3, "normal", { pitch: "fastball", count: 5 }, 300), false);
+    const r = setup(1000, 200, 109);
+    r.hv.invite(3, "normal", { pitch: "fastball", count: 5 }, 300);
+    r.advance(200);
+    assert.equal(r.gv.accept(), false, "the guest has only 200 XP");
+    assert.equal(r.ge.state.career.xp, 200);
+    // Only the listed amounts; no bet on a normal match.
+    const q = setup(5000, 5000, 111);
+    q.hv.invite(3, "normal", { pitch: "fastball", count: 5 }, 777);
+    assert.equal(q.hv.info.stake, 0, "odd amounts are not taken");
+    q.advance(200);
+    q.gv.decline();
+    q.advance(200);
+    q.hv.invite(3, "normal", null, 500);
+    assert.equal(q.hv.info.stake, 0, "a normal match is never a bet");
+  }
+});
 check("Batting order: the player sets who bats where between matches; positions stay", () => {
   const c = newCareer();
   c.created = true;

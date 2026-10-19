@@ -35,6 +35,9 @@ import type {
 /** Derby set-up as the host picks it (the seed comes from the match id). */
 export type DerbyPick = { pitch: PitchId | "mix"; count: number };
 const DERBY_COUNTS = [5, 10, 15, 20];
+/** XP bets (home-run derby only): each puts this in, the winner takes both, a draw gives back. */
+export const STAKES = [0, 100, 300, 500, 1000, 2000];
+const cleanStake = (x: unknown) => (STAKES.includes(Number(x)) ? Number(x) : 0);
 const cleanPick = (x: unknown): DerbyPick | null => {
   const o = (x && typeof x === "object" ? x : null) as Record<string, unknown> | null;
   if (!o || typeof o.pitch !== "string" || !/^[a-z]+$/.test(o.pitch)) return null;
@@ -61,6 +64,10 @@ export type VersusInfo = {
   level: Difficulty;
   /** Home-run derby (null: a normal match). */
   derby: DerbyPick | null;
+  /** XP each player bets (derby only; 0 = none). */
+  stake: number;
+  /** What the bet paid this player at the end (null: no bet or not settled yet). */
+  payout: { gain: number; text: string } | null;
   result: { mine: number; theirs: number; reason?: string } | null;
   report: ReportState;
 };
@@ -148,6 +155,8 @@ export class Versus {
       innings: 3,
       level: "normal",
       derby: null,
+      stake: 0,
+      payout: null,
       result: null,
       report: "none",
     };
@@ -163,17 +172,25 @@ export class Versus {
   }
 
   /** Host: ask the guest for a match. */
-  invite(innings = 3, level: Difficulty = this.info.level, derby: DerbyPick | null = null) {
+  invite(
+    innings = 3,
+    level: Difficulty = this.info.level,
+    derby: DerbyPick | null = null,
+    stake = 0,
+  ) {
     if (this.room.role !== "host" || this.room.state.status !== "ready") return false;
     if (this.engine.matchActive && !this.engine.versus) return false;
     const matchId = newMatchId(),
-      pick = derby ? cleanPick(derby) : null;
+      pick = derby ? cleanPick(derby) : null,
+      bet = pick ? cleanStake(stake) : 0;
     if (derby && !pick) return false;
+    if (bet > this.myXp()) return false;
     this.room.send("vs-invite", {
       matchId,
       innings,
       level,
       derby: pick,
+      stake: bet,
       sheet: this.engine.teamSheet(),
     });
     this.set({
@@ -182,15 +199,22 @@ export class Versus {
       innings,
       level,
       derby: pick,
+      stake: bet,
+      payout: null,
       result: null,
       report: "none",
     });
     return true;
   }
+  /** XP this player has to bet (his own career, also during a match). */
+  myXp() {
+    return this.engine.versus ? this.engine.versusXp : this.engine.state.career.xp;
+  }
   /** Guest: take the invitation. */
   accept() {
     if (this.info.stage !== "invited" || !this.inviteSheet || !this.info.matchId) return false;
     if (this.engine.matchActive && !this.engine.versus) return false;
+    if (this.info.stake > this.myXp()) return false;
     this.room.send("vs-accept", { matchId: this.info.matchId, sheet: this.engine.teamSheet() });
     this.begin(this.inviteSheet);
     return true;
@@ -212,6 +236,7 @@ export class Versus {
       opponent: this.info.opponent,
       opponentId: this.opponentId,
       seq: this.seq,
+      stake: this.info.stake,
       turnK: this.turnK,
       lastTurn: this.lastTurn,
       engine: e,
@@ -244,13 +269,20 @@ export class Versus {
       innings: d.innings,
       level: d.engine.level ?? "normal",
       derby: d.engine.derby ? { pitch: d.engine.derby.pitch, count: d.engine.derby.count } : null,
+      stake: cleanStake(d.stake),
+      payout: null,
       opponent: d.opponent,
       result: null,
       report: "none",
     });
   }
   quit() {
-    if (this.info.stage === "playing") this.room.send("vs-end", { matchId: this.info.matchId });
+    if (this.info.stage === "playing") {
+      this.room.send("vs-end", { matchId: this.info.matchId });
+      // Leaving a match with a bet: the stake is lost (the other one wins it).
+      if (this.info.stake > 0 && this.info.matchId && this.engine.versus)
+        this.engine.wagerSettle(this.info.matchId, 0, "홈런 더비 포기 · 건 경험치를 잃음");
+    }
     if (this.engine.versus) this.engine.endVersus();
     this.set({ stage: "idle", matchId: null, result: null, report: "none" });
   }
@@ -282,7 +314,20 @@ export class Versus {
     this.hookDefense();
     // Top of the first: the guest bats.
     this.engine.versusTurn(!home, 1);
-    this.set({ stage: "playing", home, opponent: sheet.player, result: null, report: "none" });
+    this.set({
+      stage: "playing",
+      home,
+      opponent: sheet.player,
+      result: null,
+      report: "none",
+      payout: null,
+    });
+    // The bet is taken now (and saved at once). Not enough XP left: the match is called off.
+    const stake = this.info.stake;
+    if (stake > 0 && this.info.matchId && !this.engine.wagerStake(this.info.matchId, stake)) {
+      this.room.send("vs-end", { matchId: this.info.matchId, why: "nostake" });
+      this.finish("경험치가 부족해 시작하지 못했어요 · 기록 없음");
+    }
   }
 
   /** The pitcher's pickoffs and throw choices go to the batter's engine. */
@@ -305,6 +350,8 @@ export class Versus {
           innings: d.innings === 9 ? 9 : 3,
           level: LEVELS.includes(d.level as Difficulty) ? (d.level as Difficulty) : "normal",
           derby: cleanPick(d.derby),
+          stake: cleanPick(d.derby) ? cleanStake(d.stake) : 0,
+          payout: null,
           opponent: this.inviteSheet?.player ?? "상대",
           result: null,
           report: "none",
@@ -325,8 +372,14 @@ export class Versus {
         }
         break;
       case "vs-end":
-        if (this.info.stage === "playing" && mine)
-          this.finish("상대가 경기를 끝냈어요 · 기록 없음");
+        if (this.info.stage === "playing" && mine) {
+          if (d.why === "nostake") this.finish("상대 경험치가 부족해 취소됐어요 · 기록 없음");
+          else
+            this.finish(
+              this.info.stake > 0 ? "상대가 경기를 포기했어요" : "상대가 경기를 끝냈어요 · 기록 없음",
+              true,
+            );
+        }
         return;
     }
     const v = this.engine.versus;
@@ -554,10 +607,12 @@ export class Versus {
     this.engine.versusTurn(meBat, t.inning);
     this.lastPhase = "";
   }
-  private finish(reason?: string) {
+  /** `forfeit`: the other player gave up (he lost his stake: the pot is ours). */
+  private finish(reason?: string, forfeit = false) {
     this.engine.versusFinish(reason);
     const r = this.engine.versus?.result ?? null;
     this.set({ stage: "over", result: r, report: reason ? "skip" : "none" });
+    this.settle(r, reason, forfeit);
     if (!reason && r && this.onReport && this.info.matchId && !this.info.derby) {
       this.set({ report: "sending" });
       void this.onReport({
@@ -567,5 +622,28 @@ export class Versus {
         theirs: r.theirs,
       }).then((rep) => this.set({ report: rep }));
     }
+  }
+  /**
+   * The bet, once per match (each side pays only itself): the winner gets both stakes, a draw
+   * gives the stake back, a loss nothing. Called off by the network: stake back. The other
+   * player gave up: we win the pot.
+   */
+  private settle(
+    r: { mine: number; theirs: number } | null,
+    reason: string | undefined,
+    forfeit: boolean,
+  ) {
+    const stake = this.info.stake,
+      id = this.info.matchId;
+    if (!(stake > 0) || !id || !this.engine.versus) return;
+    let gain: number, text: string;
+    if (forfeit) [gain, text] = [stake * 2, "상대 포기로 홈런 더비 승리"];
+    else if (reason) [gain, text] = [stake, "홈런 더비 중단 · 건 경험치 돌려받음"];
+    else if (r && r.mine > r.theirs) [gain, text] = [stake * 2, "홈런 더비 승리 · 건 경험치 2배"];
+    else if (r && r.mine === r.theirs) [gain, text] = [stake, "홈런 더비 무승부 · 건 경험치 돌려받음"];
+    else [gain, text] = [0, "홈런 더비 패배 · 건 경험치를 잃음"];
+    const paid = this.engine.wagerSettle(id, gain, text);
+    // Already settled (a refresh after the end): nothing new to show.
+    if (paid || gain === 0) this.set({ payout: { gain: paid, text } });
   }
 }
