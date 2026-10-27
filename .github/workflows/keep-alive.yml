@@ -1,13 +1,16 @@
 # Diamond Road · 명예의 전당 서버(Supabase 무료) 깨우기
-# 무료 서버는 일주일 동안 요청이 없으면 일시정지되므로, 4일마다 순위표를 한 번 읽는다.
+# 무료 서버는 7일 동안 "데이터베이스 사용"이 적으면 일시정지된다. Supabase 문서 기준으로
+# "하루에 몇 번" 요청이 있으면 보통 멈추지 않으므로, 하루 두 번 여러 표를 읽는다.
+# (v1은 4일마다 한 번이라 잘 실행됐는데도 2026-10 말에 일시정지됨.)
 # 공개 키(publishable)만 쓴다 — 게임 페이지에도 들어 있는 키라 비밀이 아니다.
-# 실패하면(서버가 이미 멈췄거나 SQL이 빠졌으면) GitHub가 저장소 주인에게 메일을 보낸다.
+# 실패하면(서버가 이미 멈췄으면) GitHub가 저장소 주인에게 메일을 보낸다 → Supabase에서 Resume.
 name: Supabase keep-alive
 
 on:
   schedule:
-    # 매달 1·5·9·…·29일 03:17 UTC (한국 12:17). 예약 실행은 기본 브랜치(main)의 이 파일로만 돈다.
-    - cron: "17 3 */4 * *"
+    # 매일 03:17, 15:47 UTC (한국 12:17, 00:47). 예약 실행은 기본 브랜치(main)의 이 파일로만 돈다.
+    - cron: "17 3 * * *"
+    - cron: "47 15 * * *"
   workflow_dispatch:
 
 permissions:
@@ -21,16 +24,26 @@ jobs:
       URL: https://exnxnghlfozfinmypziz.supabase.co
       KEY: sb_publishable_Sc4CHj4PldKetogXwVc83A_1INF1gVX
     steps:
-      - name: 명예의 전당 읽기
+      - name: 명예의 전당 읽기 (꼭 성공해야 함)
         run: |
-          code=$(curl -s -o board.json -w "%{http_code}" --retry 3 --retry-delay 20 \
-            -H "apikey: $KEY" "$URL/rest/v1/hall_of_fame?select=player_id&limit=1")
-          echo "hall_of_fame: HTTP $code"
-          test "$code" = 200
+          for i in 1 2 3; do
+            code=$(curl -s -o board.json -w "%{http_code}" --retry 3 --retry-delay 20 \
+              -H "apikey: $KEY" "$URL/rest/v1/hall_of_fame?select=player_id&limit=5")
+            echo "hall_of_fame #$i: HTTP $code"
+            test "$code" = 200
+            sleep 5
+          done
       - name: 저장 코드 기능 확인
         run: |
           code=$(curl -s -o load.json -w "%{http_code}" --retry 3 --retry-delay 20 -X POST \
             -H "apikey: $KEY" -H "Content-Type: application/json" \
             -d '{"p_code":"AAAA-AAAA"}' "$URL/rest/v1/rpc/cloud_load")
           echo "cloud_load: HTTP $code ($(cat load.json))"
+          test "$code" = 200
+      - name: 라이벌 리그 읽기 (versus.sql을 아직 안 돌렸으면 실패해도 넘어감)
+        continue-on-error: true
+        run: |
+          code=$(curl -s -o vs.json -w "%{http_code}" --retry 2 --retry-delay 10 \
+            -H "apikey: $KEY" "$URL/rest/v1/versus_board?select=player_id&limit=5")
+          echo "versus_board: HTTP $code"
           test "$code" = 200
